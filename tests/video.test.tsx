@@ -1,7 +1,7 @@
 import type { RenderPropsOf } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 
-import { cleanLog, fixPrompt, parseActionsUrl } from '../hooks/lib'
+import { cleanLog, fixPrompt, parseActionsUrl, plannedJobs, withWaitingJobs } from '../hooks/lib'
 import {
   BOOM_FRAMES,
   CONFETTI_FRAMES,
@@ -13,6 +13,8 @@ import {
   confettiFrame,
   invaderAt,
   invadersFrame,
+  newShip,
+  placeInvaders,
   set,
   toCells,
 } from '../hooks/sprites'
@@ -92,6 +94,34 @@ test('space invaders: running jobs march, passed ones burst, a failure lands and
   expect(lost(FALL_FRAMES + BOOM_FRAMES + 2).data.filter(c => c === 0xf87171).length).toBeGreaterThan(30) // GAME OVER and the landed invader
   expect(toCells(running)).toMatchObject({ columns: 64, rows: 11 })
   expect(toCells(invadersFrame({ invaders: [{ state: 'pending' }], frame: 0, width: 100 })).columns).toBe(100) // as wide as the board
+})
+
+test('space invaders: jobs that join later keep everyone in place, and the ship hunts at random', async () => {
+  // A planned job GitHub now names takes its place quietly; a matrix job's extra half and a new job fly in.
+  const first = placeInvaders(new Map(), [{ key: 'a', state: 'pending' }, { key: 'plan', state: 'pending' }], 0)
+  const later = placeInvaders(first, [{ key: 'a', state: 'pending' }, { key: 'm1', state: 'pending' }, { key: 'm2', state: 'pending' }], 30)
+  expect(later.get('a')).toMatchObject({ slot: 0 })
+  expect(later.get('m1')).toMatchObject({ slot: 1, seenAt: 0 })
+  expect(later.get('m2')).toMatchObject({ slot: 2, seenAt: 30 })
+  // A re-run's jobs take the old places and fly in again.
+  const done = placeInvaders(later, [{ key: 'a', state: 'pass' }, { key: 'm1', state: 'pass' }, { key: 'm2', state: 'pass' }], 40)
+  expect(placeInvaders(done, [{ key: 'a#2', state: 'pending' }], 50).get('a#2')).toEqual({ slot: 0, seenAt: 50, isRunning: true })
+
+  // The formation never jumps when a column is added, and the ship fires at more than one invader.
+  const ship = newShip()
+  const lefts: number[] = []
+  let shots = 0
+  for (let frame = 0; frame < 200; frame++) {
+    const count = frame < 60 ? 2 : 4
+    const invaders = Array.from({ length: count }, (_, slot) => ({ state: 'pending' as const, slot, seenAt: slot < 2 ? undefined : 60 }))
+    const before = ship.shots.length
+    invadersFrame({ invaders, frame, ship })
+    if (ship.shots.length > before) shots++
+    lefts.push(ship.fx)
+  }
+  expect(Math.max(...lefts.slice(1).map((x, i) => Math.abs(x - lefts[i]!)))).toBeLessThanOrEqual(1)
+  expect(shots).toBeGreaterThan(5)
+  expect(ship.seed).toBeGreaterThan(3) // it changed targets more than once
 })
 
 // ── Fix it ──────────────────────────────────────────────────────────────
@@ -211,4 +241,48 @@ test('a finished release that gets re-run goes back to running', async ($, on) =
   expect(viewed).toContain(2) // the new attempt's jobs, not the old ones
   expect(await ui.find({ type: 'Button', key: 'rerun' })).toBeUndefined() // nothing failed now
   await ui.unmount()
+})
+
+test('jobs waiting on others count before GitHub lists them', async () => {
+  const yaml = [
+    'name: release',
+    'on: push',
+    'jobs:',
+    '  build:',
+    '    runs-on: ubuntu-latest',
+    '    steps:',
+    '      - name: not a job',
+    '        run: make',
+    '  test:',
+    "    name: 'Unit tests'",
+    '    needs: build',
+    '    strategy:',
+    '      matrix: { os: [a, b] }',
+    '  # a comment',
+    '  publish:',
+    '    name: Publish ${{ github.ref_name }}',
+    '    needs: [build, test]',
+    'env:',
+    '  NOT_A_JOB: 1',
+  ].join('\n')
+  const planned = plannedJobs(yaml)
+  expect(planned).toEqual([
+    { key: 'build', name: 'build' },
+    { key: 'test', name: 'Unit tests' },
+    { key: 'publish', name: 'Publish ${{ github.ref_name }}' },
+  ])
+
+  // Only build has started: test and publish are still to come.
+  const started = [{ name: 'build', state: 'pass' as const }]
+  const all = withWaitingJobs(started, planned, true)
+  expect(all.map(job => [job.name, job.state, job.isWaiting ?? false])).toEqual([
+    ['build', 'pass', false],
+    ['Unit tests', 'pending', true],
+    ['Publish', 'pending', true],
+  ])
+  // Matrix and expression names match what GitHub lists once they start.
+  const later = [...started, { name: 'Unit tests (a)', state: 'pending' as const }, { name: 'Publish v1.0.0', state: 'pending' as const }]
+  expect(withWaitingJobs(later, planned, true)).toHaveLength(3)
+  // A finished run never waits on anything.
+  expect(withWaitingJobs(started, planned, false)).toHaveLength(1)
 })

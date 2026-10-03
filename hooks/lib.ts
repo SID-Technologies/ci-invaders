@@ -135,6 +135,62 @@ export function parseRuns(json: string): Run[] {
   })
 }
 
+/** A job a workflow file declares: its key under `jobs:`, and the name GitHub shows for it. */
+export type PlannedJob = { key: string; name: string }
+
+function unquote(text: string): string {
+  const t = text.replace(/\s+#.*$/, '').trim()
+  return /^(['"]).*\1$/.test(t) ? t.slice(1, -1) : t
+}
+
+/**
+ * The jobs a workflow file declares, in order. Just enough YAML for the `jobs:`
+ * block: each key one level in, and its `name:` if it has one. A job waiting on
+ * another isn't in GitHub's job list until it starts; this is how we know it's coming.
+ */
+export function plannedJobs(yaml: string): PlannedJob[] {
+  const lines = yaml.split(/\r?\n/)
+  const start = lines.findIndex(line => /^jobs:\s*(#.*)?$/.test(line))
+  if (start < 0) return []
+  const jobs: PlannedJob[] = []
+  let jobIndent = -1
+  let propIndent = -1
+  for (const line of lines.slice(start + 1)) {
+    if (!line.trim() || line.trim().startsWith('#')) continue
+    const indent = line.length - line.trimStart().length
+    if (indent === 0) break // the next top-level key: jobs are over
+    if (jobIndent < 0) jobIndent = indent
+    if (indent === jobIndent) {
+      const key = /^\s*([\w-]+):\s*(#.*)?$/.exec(line)?.[1]
+      if (key) jobs.push({ key, name: key })
+      propIndent = -1
+      continue
+    }
+    const job = jobs.at(-1)
+    if (!job || indent < jobIndent) continue
+    if (propIndent < 0) propIndent = indent
+    const name = indent === propIndent ? /^\s*name:\s*(.+)$/.exec(line)?.[1] : undefined
+    if (name) job.name = unquote(name)
+  }
+  return jobs
+}
+
+/** Does a job GitHub listed come from this planned one? Matrix and reusable-workflow jobs carry suffixes. */
+function isFrom(job: Job, planned: PlannedJob): boolean {
+  const name = planned.name.split('${{')[0]!.trim()
+  if (!name) return job.name.startsWith(planned.key)
+  return job.name === name || job.name.startsWith(`${name} (`) || job.name.startsWith(`${name} / `) || (planned.name.includes('${{') && job.name.startsWith(name))
+}
+
+/** GitHub's jobs, plus the planned ones it hasn't started yet, waiting, while the run is still going. */
+export function withWaitingJobs(jobs: readonly Job[], planned: readonly PlannedJob[], isRunGoing: boolean): Job[] {
+  if (!isRunGoing) return [...jobs]
+  const waiting = planned
+    .filter(p => !jobs.some(job => isFrom(job, p)))
+    .map((p): Job => ({ name: p.name.split('${{')[0]!.trim() || p.key, state: 'pending', isWaiting: true }))
+  return [...jobs, ...waiting]
+}
+
 export function parseJobs(json: string): Job[] {
   const raw = JSON.parse(json) as { jobs?: RawCheck[] }
   return (raw.jobs ?? []).map(job => {

@@ -33,7 +33,14 @@ export type Reviewer = { login: string; state: 'APPROVED' | 'CHANGES_REQUESTED' 
 /** One workflow's last runs on a branch, newest first. */
 export type History = { results: CheckState[]; at: number }
 
-export type Job = { name: string; state: CheckState; url?: string; durationMs?: number }
+export type Job = {
+  name: string
+  state: CheckState
+  url?: string
+  durationMs?: number
+  /** In the workflow but not started by GitHub yet: waiting on the jobs it `needs`. */
+  isWaiting?: boolean
+}
 
 export type Run = {
   id: number

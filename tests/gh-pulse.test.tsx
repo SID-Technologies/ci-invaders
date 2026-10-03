@@ -238,7 +238,7 @@ test('the board lists what is tracked, your open PRs, and tracks one in a press'
   expect(await ui.find({ type: 'Link', text: '#484' })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: /YOUR OPEN PRS/ })).toBeUndefined()
   expect(await ui.find({ type: 'Button', key: `item:pr:${PR_URL}` })).toBeDefined()
-  expect(opened.at(-1)?.rows).toBe(6)
+  expect(opened.at(-1)?.rows).toBe(7) // actions, help, TRACKING, "Pull requests", three PRs
   await ui.press({ key: 'minimize' })
 
   // x removes the open one; it goes back to your open PRs.

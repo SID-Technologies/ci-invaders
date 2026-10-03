@@ -33,6 +33,8 @@ import {
   isReleaseCreate,
   mergeLabel,
   parseJobs,
+  plannedJobs,
+  withWaitingJobs,
   parseOpenPrs,
   parsePr,
   parseRuns,
@@ -54,8 +56,19 @@ import {
   verdict,
   workflowRun,
 } from './lib'
-import type { Failure, Settings, Shown, Tally, Transition } from './lib'
-import { CONFETTI_FRAMES, HIT_FRAMES, LOSS_FRAMES, VICTORY_FRAMES, confettiFrame, invadersFrame, toCells } from './sprites'
+import type { Failure, PlannedJob, Settings, Shown, Tally, Transition } from './lib'
+import {
+  CONFETTI_FRAMES,
+  HIT_FRAMES,
+  LOSS_FRAMES,
+  VICTORY_FRAMES,
+  type Ship,
+  confettiFrame,
+  invadersFrame,
+  newShip,
+  placeInvaders,
+  toCells,
+} from './sprites'
 
 type $ = EngineInterface
 
@@ -105,6 +118,10 @@ const CELEBRATION_FRAMES: Record<Celebration['kind'], number> = {
 }
 /** The frame each Actions job was seen to finish on, by `<release key>|<job key>`: when its invader goes. */
 const doneAt = new Map<string, number>()
+/** Each release's invaders: where each job sits in the formation, and when it arrived. */
+const fleets = new Map<string, ReturnType<typeof placeInvaders>>()
+/** Each release's ship, which carries on from frame to frame. */
+const ships = new Map<string, Ship>()
 const PR_FIELDS =
   'number,title,url,state,isDraft,reviewDecision,mergeable,statusCheckRollup,headRefName,baseRefName,latestReviews,reviewRequests'
 /** CI history is fetched again after this long. */
@@ -133,6 +150,31 @@ async function fetchPr($: $, ref: string): Promise<Pr> {
   return parsePr(await gh($, args))
 }
 
+/** The jobs each run's workflow file declares, by run id: the file at that commit never changes. */
+const plans = new Map<number, PlannedJob[]>()
+
+/** The workflow file the run was started from, at its commit, read for the jobs it declares. */
+async function planFor($: $, run: Run): Promise<PlannedJob[]> {
+  const known = plans.get(run.id)
+  if (known) return known
+  let planned: PlannedJob[] = []
+  try {
+    const [path = '', sha = ''] = (
+      await gh($, ['api', `repos/{owner}/{repo}/actions/runs/${run.id}`, '--jq', '.path + "\n" + .head_sha'])
+    ).trim().split('\n')
+    const file = path.split('@')[0] ?? ''
+    if (file.startsWith('.github/workflows/') && sha) {
+      planned = plannedJobs(
+        await gh($, ['api', '-H', 'Accept: application/vnd.github.raw', `repos/{owner}/{repo}/contents/${file}?ref=${sha}`]),
+      )
+    }
+  } catch {
+    // No plan: we show the jobs GitHub has started, as before.
+  }
+  plans.set(run.id, planned)
+  return planned
+}
+
 async function withJobs($: $, run: Run, previous?: Run): Promise<Run> {
   // A run that had already finished, and hasn't been re-run since, keeps the jobs we have.
   const isSameFinish = previous?.state !== 'pending' && previous?.attempt === run.attempt
@@ -140,7 +182,9 @@ async function withJobs($: $, run: Run, previous?: Run): Promise<Run> {
     return { ...run, jobs: previous.jobs }
   }
   try {
-    return { ...run, jobs: parseJobs(await gh($, ['run', 'view', String(run.id), '--json', 'jobs'])) }
+    const jobs = parseJobs(await gh($, ['run', 'view', String(run.id), '--json', 'jobs']))
+    // Jobs waiting on others aren't listed until they start: count them from the workflow file.
+    return { ...run, jobs: withWaitingJobs(jobs, run.state === 'pending' ? await planFor($, run) : [], run.state === 'pending') }
   } catch {
     return { ...run, jobs: previous?.jobs ?? [] }
   }
@@ -229,6 +273,12 @@ async function upsertPr($: $, next: Pr): Promise<void> {
   await persistTracking($)
 }
 
+function shipFor(key: string): Ship {
+  const ship = ships.get(key) ?? newShip()
+  ships.set(key, ship)
+  return ship
+}
+
 async function upsertRelease($: $, next: Release): Promise<void> {
   const before = (await read($, releases)).find(r => r.key === next.key)
   const wasRunning = new Set(before ? releaseInvaders(before).filter(job => job.state === 'pending').map(job => job.key) : [])
@@ -236,6 +286,7 @@ async function upsertRelease($: $, next: Release): Promise<void> {
   for (const job of releaseInvaders(next)) {
     if (job.state !== 'pending' && wasRunning.has(job.key)) doneAt.set(`${next.key}|${job.key}`, now)
   }
+  fleets.set(next.key, placeInvaders(fleets.get(next.key) ?? new Map(), releaseInvaders(next), now))
   await update($, releases, list =>
     [...list.filter(r => r.key !== next.key), next].slice(-MAX_RELEASES),
   )
@@ -963,9 +1014,10 @@ export const register: Register = (on, options) => {
     )
 
     /** glyph · workflow · name · time, columns aligned. */
-    const Row = ({ key, state, workflow, name, url, ms, indent = 0 }: {
+    const Row = ({ key, state, workflow, name, url, ms, indent = 0, isWaiting = false }: {
       key: string
       state: Shown
+      isWaiting?: boolean
       workflow?: string
       name: string
       url?: string
@@ -985,7 +1037,7 @@ export const register: Register = (on, options) => {
           {url ? <Link href={url} label={name} /> : <Text wrap="truncate-end">{name}</Text>}
         </Box>
         <Box width={TIME_COLUMN} flexShrink={0} justifyContent="flex-end">
-          <Text dimColor>{state === 'pending' ? 'running' : duration(ms)}</Text>
+          <Text dimColor>{isWaiting ? 'waiting' : state === 'pending' ? 'running' : duration(ms)}</Text>
         </Box>
       </Box>
     )
@@ -1165,9 +1217,15 @@ export const register: Register = (on, options) => {
               key="invaders"
               {...toCells(
                 invadersFrame({
-                  invaders: releaseInvaders(r).map(job => ({ state: job.state, doneAt: doneAt.get(`${r.key}|${job.key}`) })),
+                  invaders: releaseInvaders(r).map(job => ({
+                    state: job.state,
+                    slot: fleets.get(r.key)?.get(job.key)?.slot,
+                    seenAt: fleets.get(r.key)?.get(job.key)?.seenAt,
+                    doneAt: doneAt.get(`${r.key}|${job.key}`),
+                  })),
                   frame: f,
                   width: Math.min(inner, 120),
+                  ship: shipFor(r.key),
                 }),
               )}
             />
@@ -1199,6 +1257,7 @@ export const register: Register = (on, options) => {
                         name: job.name,
                         url: job.url,
                         ms: job.durationMs,
+                        isWaiting: job.isWaiting,
                       }),
                     )}
                 </Box>

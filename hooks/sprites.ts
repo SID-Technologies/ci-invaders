@@ -2,6 +2,7 @@
  * Pixel art for the board, drawn into a `Raster`: two pixels per terminal cell,
  * stacked with half blocks. Everything here is pure: a frame is a function of
  * its inputs, so the board redraws it from the frame clock and tests pin it.
+ * The one exception is the invaders' ship, which carries on from frame to frame.
  */
 
 /** Transparent: the terminal's own background shows through. */
@@ -145,8 +146,41 @@ export const VICTORY_FRAMES = 40
 
 export type InvaderState = 'pending' | 'pass' | 'fail' | 'skip'
 
-/** One job: its state, and the frame it finished on when that was seen (else long ago). */
-export type Invader = { state: InvaderState; doneAt?: number }
+/**
+ * One job: its state, its place in the formation (kept for good, so a job that
+ * shows up later never reshuffles the others), the frame it arrived on (it flies
+ * in from the top) and the frame it finished on (else long ago).
+ */
+export type Invader = { state: InvaderState; slot?: number; seenAt?: number; doneAt?: number }
+
+/** Frames a new invader takes to fly down into its place. */
+export const ENTER_FRAMES = 16
+
+/**
+ * The ship carries on from frame to frame: where it is, who it's after, its
+ * shots in flight. The board keeps one per release and hands it back each frame;
+ * this is the one part of the scene that isn't a function of the frame alone.
+ */
+export type Ship = {
+  /** NaN until it's first drawn. */
+  x: number
+  /** The formation's left edge and which way it's walking, so a new column never makes it jump. */
+  fx: number
+  dir: 1 | -1
+  /** The frame it was last moved on. */
+  at?: number
+  target?: number
+  /** Frames spent lined up under the target; it moves on after a couple of shots. */
+  dwell: number
+  cooldown: number
+  seed: number
+  shots: { x: number; y: number }[]
+  sparks: { x: number; y: number; age: number }[]
+}
+
+export function newShip(): Ship {
+  return { x: NaN, fx: NaN, dir: 1, dwell: 0, cooldown: 0, seed: 1, shots: [], sparks: [] }
+}
 
 const INVADER_PALETTE: Record<string, number> = {
   a: 0xfacc15, // running
@@ -185,17 +219,27 @@ const GROUND_Y = INVADERS_HEIGHT - 1
 const SHIP_Y = GROUND_Y - 4
 /** Where a failed invader comes to rest: on the ground where the ship was. */
 const LAND_Y = SHIP_Y - 1
-/** Frames the ship spends on each target: half moving under it, half shooting. */
-const TARGET_FRAMES = 24
+/** Pixels a shot climbs per frame. */
+const SHOT_SPEED = 2
+/** Frames between shots. */
+const RELOAD_FRAMES = 7
+/** Frames the ship stays under its target before picking another. */
+const DWELL_FRAMES = 12
+/** Past this many frames behind, the ship skips ahead instead of replaying them. */
+const MAX_CATCH_UP = 60
 
 function tinted(sprite: readonly string[], letter: string): string[] {
   return sprite.map(row => row.replace(/x/g, letter))
 }
 
+/** How far the formation can walk before it meets the edge. */
+function roomFor(count: number, width: number): number {
+  return Math.max(0, width - (Math.min(count, COLUMNS) * STEP_X - (STEP_X - 5)) - 2)
+}
+
 /** Where the formation's top-left sits: it walks edge to edge and back, a pixel every 2 frames. */
 function formationX(count: number, frame: number, width: number): number {
-  const formation = Math.min(count, COLUMNS) * STEP_X - (STEP_X - 5)
-  const room = Math.max(0, width - formation - 2)
+  const room = roomFor(count, width)
   if (room === 0) return 1
   const step = Math.floor(frame / 2) % (room * 2)
   return 1 + (step < room ? step : room * 2 - step)
@@ -204,6 +248,40 @@ function formationX(count: number, frame: number, width: number): number {
 /** Each invader's home: columns of six, two rows at most. */
 export function invaderAt(index: number, count: number, frame: number, width = INVADERS_WIDTH): { x: number; y: number } {
   return { x: formationX(count, frame, width) + (index % COLUMNS) * STEP_X, y: TOP + Math.floor(index / COLUMNS) * STEP_Y }
+}
+
+/**
+ * Give each job a place in the formation. Jobs keep theirs; a new one takes the
+ * place of a job that vanished while still running (a planned job GitHub has now
+ * named, or a matrix job splitting up) and arrives quietly, otherwise it gets a new
+ * place and flies in. A re-run's jobs take the old run's places and fly in as a new wave.
+ */
+export function placeInvaders(
+  before: ReadonlyMap<string, { slot: number; seenAt?: number; isRunning: boolean }>,
+  jobs: readonly { key: string; state: InvaderState }[],
+  frame: number,
+): Map<string, { slot: number; seenAt?: number; isRunning: boolean }> {
+  const next = new Map<string, { slot: number; seenAt?: number; isRunning: boolean }>()
+  for (const job of jobs) {
+    const was = before.get(job.key)
+    if (was) next.set(job.key, { ...was, isRunning: job.state === 'pending' })
+  }
+  const freed = [...before.entries()]
+    .filter(([key]) => !next.has(key))
+    .map(([, place]) => place)
+    .sort((a, b) => a.slot - b.slot)
+  let end = Math.max(-1, ...[...before.values()].map(place => place.slot)) + 1
+  for (const job of jobs) {
+    if (next.has(job.key)) continue
+    const reuse = freed.shift()
+    const isQuiet = reuse?.isRunning === true
+    next.set(job.key, {
+      slot: reuse ? reuse.slot : end++,
+      seenAt: isQuiet ? reuse.seenAt : frame,
+      isRunning: job.state === 'pending',
+    })
+  }
+  return next
 }
 
 // A 5-pixel-tall font, just the letters the end screens need.
@@ -234,11 +312,12 @@ function banner(p: Pixels, text: string, y: number, letter: string): void {
   }
 }
 
-export function invadersFrame(args: { invaders: readonly Invader[]; frame: number; width?: number }): Pixels {
+export function invadersFrame(args: { invaders: readonly Invader[]; frame: number; width?: number; ship?: Ship }): Pixels {
   const { frame } = args
   const W = Math.max(32, args.width ?? INVADERS_WIDTH)
   const p = blank(W, INVADERS_HEIGHT)
   const pal = INVADER_PALETTE
+  const ship = args.ship ?? newShip()
 
   // Two layers of stars falling at different speeds.
   const rand = random(41)
@@ -251,48 +330,135 @@ export function invadersFrame(args: { invaders: readonly Invader[]; frame: numbe
   }
   for (let x = 0; x < W; x++) set(p, x, GROUND_Y, pal.g ?? 0)
 
-  const invaders = args.invaders.slice(0, MAX_INVADERS)
-  const count = invaders.length
+  const invaders = args.invaders.map((inv, i) => ({ ...inv, slot: inv.slot ?? i })).filter(inv => inv.slot < MAX_INVADERS)
+  const count = Math.max(0, ...invaders.map(inv => inv.slot + 1))
   const legs = Math.floor(frame / 8) % 2
   const ago = (inv: Invader) => (inv.doneAt === undefined ? Infinity : frame - inv.doneAt)
-  const homeOf = (i: number) => invaderAt(i, count, frame, W)
+  const room = roomFor(count, W)
+  if (Number.isNaN(ship.fx)) {
+    ship.fx = formationX(count, frame, W)
+    ship.dir = Math.floor(frame / 2) % (Math.max(1, room) * 2) < room ? 1 : -1
+  }
+  /** Where an invader sits now, or `ahead` frames from now (for aiming). */
+  const homeOf = (slot: number, ahead = 0) => ({
+    x: Math.floor(Math.max(1, Math.min(1 + room, ship.fx + ship.dir * 0.5 * ahead))) + (slot % COLUMNS) * STEP_X,
+    y: TOP + Math.floor(slot / COLUMNS) * STEP_Y,
+  })
+  /** Where it's drawn: flying down from above the scene for its first frames. */
+  const placeOf = (inv: Invader & { slot: number }) => {
+    const home = homeOf(inv.slot)
+    const since = inv.seenAt === undefined ? Infinity : frame - inv.seenAt
+    if (since >= ENTER_FRAMES) return home
+    const t = Math.max(0, since) / ENTER_FRAMES
+    return { x: home.x, y: Math.round(home.y - (1 - t * (2 - t)) * (home.y + 6)) }
+  }
 
   // The first failure to land ends the game.
   const failed = invaders
-    .map((inv, i) => ({ inv, i, since: ago(inv) - FALL_FRAMES }))
+    .map(inv => ({ inv, since: ago(inv) - FALL_FRAMES }))
     .filter(({ inv }) => inv.state === 'fail')
     .sort((a, b) => b.since - a.since)[0]
   const isOver = failed !== undefined && failed.since >= BOOM_FRAMES
 
   if (isOver) {
     // Game over: the invaders that landed, what's left of the ship, and the verdict.
-    const cx = homeOf(failed.i).x + 2
-    invaders.forEach((inv, i) => {
-      if (inv.state === 'fail') stamp(p, tinted(INVADER[0]!, 'r'), homeOf(i).x, LAND_Y, pal)
-    })
+    const cx = homeOf(failed.inv.slot).x + 2
+    for (const inv of invaders) if (inv.state === 'fail') stamp(p, tinted(INVADER[0]!, 'r'), homeOf(inv.slot).x, LAND_Y, pal)
     for (const dx of [-7, -5, 4, 6, 8]) set(p, cx + dx, GROUND_Y - 1, pal.d ?? 0)
     banner(p, 'GAME OVER', 2, 'r')
     return p
   }
 
-  invaders.forEach((inv, i) => {
-    const home = homeOf(i)
-    if (inv.state === 'pending') stamp(p, tinted(INVADER[legs]!, 'a'), home.x, home.y, pal)
+  const running = invaders.filter(inv => inv.state === 'pending')
+  const isCleared = running.length === 0 && !failed
+  const lastHit = Math.min(...invaders.map(ago))
+  const sinceWin = lastHit - HIT_FRAMES
+
+  // Move the ship on to this frame, one frame at a time, from wherever it was.
+  if (Number.isNaN(ship.x) || ship.at === undefined || ship.at > frame || frame - ship.at > MAX_CATCH_UP) {
+    if (Number.isNaN(ship.x)) ship.x = W / 2
+    ship.at = frame - 1
+  }
+  ship.x = Math.max(2, Math.min(W - 3, ship.x))
+  for (let f = ship.at + 1; f <= frame; f++) {
+    // The formation walks half a pixel a frame and turns at the edges.
+    ship.fx += ship.dir * 0.5
+    if (ship.fx >= 1 + room) [ship.fx, ship.dir] = [1 + room, -1]
+    if (ship.fx <= 1) [ship.fx, ship.dir] = [1, 1]
+    for (const shot of ship.shots) shot.y -= SHOT_SPEED
+    for (const spark of ship.sparks) spark.age++
+    ship.sparks = ship.sparks.filter(spark => spark.age < 3)
+    ship.cooldown = Math.max(0, ship.cooldown - 1)
+    // A shot stops at the first running invader in its way.
+    const targets = running.filter(inv => inv.seenAt === undefined || f - inv.seenAt >= ENTER_FRAMES)
+    ship.shots = ship.shots.filter(shot => {
+      const struck = targets.find(inv => {
+        const at = homeOf(inv.slot)
+        return shot.x >= at.x && shot.x <= at.x + 4 && shot.y <= at.y + 3 && shot.y >= at.y
+      })
+      if (struck) ship.sparks.push({ x: shot.x, y: homeOf(struck.slot).y + 3, age: 0 })
+      return !struck && shot.y > 0
+    })
+
+    if (failed) {
+      // It races under the falling invader, arriving as it lands.
+      const goal = homeOf(failed.inv.slot).x + 2
+      const left = -(failed.since - (frame - f))
+      if (left <= 0) continue
+      ship.x += Math.sign(goal - ship.x) * Math.min(Math.abs(goal - ship.x), Math.max(2, Math.abs(goal - ship.x) / left))
+      continue
+    }
+    if (isCleared) {
+      const goal = Math.round(W / 2)
+      ship.x += Math.sign(goal - ship.x) * Math.min(Math.abs(goal - ship.x), 2)
+      continue
+    }
+    if (targets.length === 0) continue
+
+    // Aim where an invader will be when the shot gets there.
+    const aim = (inv: { slot: number }) => {
+      const home = homeOf(inv.slot)
+      return homeOf(inv.slot, Math.max(0, Math.round((SHIP_Y - 1 - (home.y + 3)) / SHOT_SPEED))).x + 2
+    }
+    let target = targets.find(inv => inv.slot === ship.target)
+    if (!target || ship.dwell >= DWELL_FRAMES) {
+      // A new target at random, not the one it just left.
+      const choices = targets.length > 1 ? targets.filter(inv => inv.slot !== ship.target) : targets
+      target = choices[Math.floor(random(ship.seed++)() * choices.length)]!
+      ship.target = target.slot
+      ship.dwell = 0
+    }
+    const goal = aim(target)
+    ship.x += Math.sign(goal - ship.x) * Math.min(Math.abs(goal - ship.x), 1)
+    if (Math.abs(goal - ship.x) < 1) ship.dwell++
+    // Anything lined up gets a shot, the target or one it passes on the way.
+    if (ship.cooldown === 0 && targets.some(inv => Math.abs(aim(inv) - ship.x) <= 1)) {
+      ship.shots.push({ x: Math.round(ship.x), y: SHIP_Y - 1 })
+      ship.cooldown = RELOAD_FRAMES
+    }
+  }
+  ship.at = frame
+
+  for (const inv of invaders) {
+    const at = placeOf(inv)
+    if (inv.state === 'pending') stamp(p, tinted(INVADER[legs]!, 'a'), at.x, at.y, pal)
     else if (inv.state === 'fail') {
       const fell = Math.min(1, ago(inv) / FALL_FRAMES)
-      stamp(p, tinted(INVADER[legs]!, 'r'), home.x, Math.round(home.y + fell * (LAND_Y - home.y)), pal)
+      stamp(p, tinted(INVADER[legs]!, 'r'), at.x, Math.round(at.y + fell * (LAND_Y - at.y)), pal)
     } else if (ago(inv) < HIT_FRAMES) {
-      stamp(p, BURST[Math.min(BURST.length - 1, Math.floor((ago(inv) / HIT_FRAMES) * BURST.length))]!, home.x, home.y, pal)
+      stamp(p, BURST[Math.min(BURST.length - 1, Math.floor((ago(inv) / HIT_FRAMES) * BURST.length))]!, at.x, at.y, pal)
     }
-  })
+  }
+
+
 
   if (failed) {
-    // It slides under the falling invader, which lands on it and blows it up.
-    const cx = homeOf(failed.i).x + 2
     if (failed.since < 0) {
-      stamp(p, SHIP, cx - 2, SHIP_Y, pal)
+      stamp(p, SHIP, Math.round(ship.x) - 2, SHIP_Y, pal)
       return p
     }
+    // The invader lands on it and blows it up.
+    const cx = Math.round(ship.x)
     const sparks = random(97)
     for (let i = 0; i < 24; i++) {
       const angle = sparks() * Math.PI * 2
@@ -302,19 +468,25 @@ export function invadersFrame(args: { invaders: readonly Invader[]; frame: numbe
     return p
   }
 
-  const running = invaders.map((inv, i) => ({ inv, i })).filter(({ inv }) => inv.state === 'pending')
-  if (running.length === 0) {
-    // Cleared: once the last burst is over, the ship takes a bow under YOU WIN, with fireworks for a while.
-    const lastHit = Math.min(...invaders.map(ago))
-    if (lastHit < HIT_FRAMES) {
-      stamp(p, SHIP, Math.round(W / 2) - 2, SHIP_Y, pal)
-      return p
+  for (const shot of ship.shots) {
+    set(p, shot.x, shot.y, pal.w ?? 0)
+    set(p, shot.x, shot.y + 1, pal.w ?? 0)
+  }
+  for (const spark of ship.sparks) {
+    set(p, spark.x, spark.y - spark.age, pal.y ?? 0)
+    if (spark.age > 0) {
+      set(p, spark.x - spark.age, spark.y, pal.o ?? 0)
+      set(p, spark.x + spark.age, spark.y, pal.o ?? 0)
     }
-    const sinceWin = lastHit - HIT_FRAMES
-    const hop = sinceWin < VICTORY_FRAMES ? Math.floor(frame / 4) % 2 : 0
-    stamp(p, SHIP, Math.round(W / 2) - 2, SHIP_Y - hop * 2, pal) // a whole cell, so the shape holds
-    if (count > 0) banner(p, 'YOU WIN', 2, 'v')
-    if (count > 0 && sinceWin < VICTORY_FRAMES) {
+  }
+
+  if (isCleared) {
+    // Cleared: once the last burst is over, the ship takes a bow under YOU WIN, with fireworks for a while.
+    const isHome = Math.abs(ship.x - Math.round(W / 2)) < 1
+    const hop = isHome && sinceWin >= 0 && sinceWin < VICTORY_FRAMES ? Math.floor(frame / 4) % 2 : 0
+    stamp(p, SHIP, Math.round(ship.x) - 2, SHIP_Y - hop * 2, pal) // a whole cell, so the shape holds
+    if (count > 0 && sinceWin >= 0) banner(p, 'YOU WIN', 2, 'v')
+    if (count > 0 && sinceWin >= 0 && sinceWin < VICTORY_FRAMES) {
       const sparks = random(Math.floor(frame / 6) + 1)
       for (let i = 0; i < 8; i++) {
         const side = i % 2 === 0 ? W * 0.2 : W * 0.8
@@ -324,22 +496,6 @@ export function invadersFrame(args: { invaders: readonly Invader[]; frame: numbe
     return p
   }
 
-  const turn = Math.floor(frame / TARGET_FRAMES)
-  const within = frame % TARGET_FRAMES
-  const centre = ({ i }: { i: number }) => homeOf(i).x + 2
-  const target = running[turn % running.length]!
-  const from = running[(turn + running.length - 1) % running.length]!
-  const half = TARGET_FRAMES / 2
-  const shipX = Math.round(within < half ? centre(from) + (centre(target) - centre(from)) * (within / half) : centre(target))
-  stamp(p, SHIP, shipX - 2, SHIP_Y, pal)
-  if (within >= half) {
-    // A shot climbs to the target and flashes where it lands.
-    const top = homeOf(target.i).y + 4
-    const y = SHIP_Y - 1 - (within - half)
-    if (y >= top) {
-      set(p, shipX, y, pal.w ?? 0)
-      set(p, shipX, y + 1, pal.w ?? 0)
-    } else if (y >= top - 2) set(p, shipX, top - 1, pal.y ?? 0)
-  }
+  stamp(p, SHIP, Math.round(ship.x) - 2, SHIP_Y, pal)
   return p
 }
