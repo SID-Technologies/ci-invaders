@@ -460,6 +460,28 @@ let ringMoves = 0
 /** The board's rows top to bottom as last drawn, by Button key, and the one holding the ring. */
 let rowKeys: readonly string[] = []
 let focusedKey: string | undefined
+/** Each section's rows as last drawn, and the row the cursor was last on in each, as lazygit remembers per panel. */
+let sectionRows: Record<string, readonly string[]> = {}
+const lastInSection = new Map<string, string>()
+/** Section headings are Buttons keyed `section:<id>`, pressed by 1, 2 and 3. */
+const SECTION = 'section:'
+
+/** Put the cursor on a row, open it if it's a tracked item, and bring it into view. */
+async function goToRow($: $, key: string): Promise<void> {
+  ringMoves += 1
+  await $.ui.focus({ requestId: PANE, key }).catch(() => undefined)
+  if (key.startsWith(ITEM)) await openItem($, key.slice(ITEM.length))
+  await $.ui.scroll({ in: PANE, to: { key }, block: 'nearest' }).catch(() => undefined)
+}
+
+/** 1, 2, 3: to that section, where the cursor last was in it. */
+async function jumpToSection($: $, id: string): Promise<void> {
+  const rows = sectionRows[id] ?? []
+  const remembered = lastInSection.get(id)
+  const key = remembered && rows.includes(remembered) ? remembered : rows[0]
+  if (key) await goToRow($, key)
+  else await $.ui.scroll({ in: PANE, to: { key: `${SECTION}${id}` }, block: 'nearest' }).catch(() => undefined)
+}
 
 /**
  * Open a tracked item. Its detail and buttons sit above the list, so opening one
@@ -984,6 +1006,7 @@ export const register: Register = (on, options) => {
     const result = await next(e)
     if (!('deny' in result)) {
       focusedKey = e.element
+      for (const [id, rows] of Object.entries(sectionRows)) if (e.element && rows.includes(e.element)) lastInSection.set(id, e.element)
       await update($, cursor, () => e.element ?? '')
     }
     if (element.startsWith(ITEM) && e.origin.kind === 'person') await openItem($, element.slice(ITEM.length))
@@ -996,12 +1019,11 @@ export const register: Register = (on, options) => {
   // past either end of the list the arrows scroll too, to reach what's above and below.
   on('ui.scroll', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
     if (e.origin.kind !== 'person' || e.pointer || Math.abs(e.by) !== 1) return next(e)
-    const to = nextRow(rowKeys, focusedKey, e.by)
+    // From a heading, down is its first row and up the row above it.
+    const first = focusedKey?.startsWith(SECTION) ? sectionRows[focusedKey.slice(SECTION.length)]?.[0] : undefined
+    const to = first ? (e.by > 0 ? first : nextRow(rowKeys, first, -1)) : nextRow(rowKeys, focusedKey, e.by)
     if (!to) return next(e)
-    ringMoves += 1
-    await $.ui.focus({ requestId: PANE, key: to })
-    if (to.startsWith(ITEM)) await openItem($, to.slice(ITEM.length))
-    await $.ui.scroll({ in: PANE, to: { key: to }, block: 'nearest' })
+    await goToRow($, to)
     return {}
   })
 
@@ -1392,6 +1414,7 @@ export const register: Register = (on, options) => {
       reviews: isSmall || reviews.error ? [] : reviews.prs.filter(pr => !tracked.has(pr.url)).map(pr => `${REVIEW}${pr.url}`),
     }
     rowKeys = [...sections.tracking, ...sections.mine, ...sections.reviews]
+    sectionRows = sections
     type Section = keyof typeof sections
     const active: Section = (Object.keys(sections) as Section[]).find(id => sections[id].includes(cursorKey)) ?? 'tracking'
     const where = (id: Section) => {
@@ -1400,10 +1423,14 @@ export const register: Register = (on, options) => {
       return keys.length === 0 ? '' : at === -1 ? ` · ${keys.length}` : ` · ${at + 1} of ${keys.length}`
     }
     const Heading = ({ id, label }: { id: Section; label: string }) => (
-      <Text bold dimColor={id !== active} wrap="truncate-end">
-        {label}
-        {where(id)}
-      </Text>
+      <Button
+        key={`${SECTION}${id}`}
+        plain
+        dimColor={id !== active}
+        hotkey={String(Object.keys(sections).indexOf(id) + 1)}
+        label={`${label}${where(id)}`}
+        onPress={() => jumpToSection($, id)}
+      />
     )
     const open = items.find(item => item.key === openKey)
     const detail = open ? ('pr' in open ? drawPr(open.pr) : drawRelease(open.release)) : null

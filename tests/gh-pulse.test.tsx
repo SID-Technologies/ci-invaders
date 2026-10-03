@@ -214,7 +214,7 @@ test('the board lists what is tracked, your open PRs, and tracks one in a press'
   expect(await ui.find({ type: 'Link', text: '#483' })).toBeDefined()
 
   // Your open PRs: the untracked one only, ready to track.
-  expect(await ui.find({ type: 'Text', text: /YOUR OPEN PRS · rocket/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'section:mine', text: /YOUR OPEN PRS · rocket/ })).toBeDefined()
   expect(await ui.find({ type: 'Button', key: `add:${mineUrl}` })).toBeDefined()
   expect(await ui.find({ type: 'Button', key: `add:${PR_URL}` })).toBeUndefined()
 
@@ -222,7 +222,7 @@ test('the board lists what is tracked, your open PRs, and tracks one in a press'
   await ui.press({ key: `item:pr:${PR_URL}` })
   expect(await ui.find({ type: 'Link', text: '#482' })).toBeDefined()
   expect(await ui.find({ type: 'Link', text: '#483' })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: /^TRACKING · \d of \d$/ })).toBeDefined() // where you are in the list
+  expect(await ui.find({ type: 'Button', text: /^TRACKING · \d of \d$/ })).toBeDefined() // where you are in the list
 
   // o opens the selected one in the browser, through gh.
   await ui.press({ key: 'open' })
@@ -237,7 +237,7 @@ test('the board lists what is tracked, your open PRs, and tracks one in a press'
   // Minimized: the list stays, detail and open PRs go; the pane asks for its rows.
   await ui.press({ key: 'minimize' })
   expect(await ui.find({ type: 'Link', text: '#484' })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: /YOUR OPEN PRS/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', key: 'section:mine' })).toBeUndefined()
   expect(await ui.find({ type: 'Button', key: `item:pr:${PR_URL}` })).toBeDefined()
   expect(opened.at(-1)?.rows).toBe(7) // actions, help, TRACKING, "Pull requests", three PRs
   await ui.press({ key: 'minimize' })

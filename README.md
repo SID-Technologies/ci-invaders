@@ -33,6 +33,7 @@ Color carries state and nothing else: red failed, amber running, green passed, g
 | Key | Does |
 | --- | --- |
 | `↑` `↓` | Move through the list; the row you land on opens and the view follows it. Past either end, or with the wheel or page keys, the board scrolls |
+| `1` `2` `3` | Jump to Tracking, Your open PRs, Waiting on your review (back to where you were in it) |
 | `enter` / click | Select a tracked row, or track one of your open PRs or review requests |
 | `f` | Fix it: the failing checks and their logs into the prompt box |
 | `e` | Rerun the failed jobs (`gh run rerun --failed`) |

@@ -120,7 +120,7 @@ test('PRs waiting on your review: listed, tracked in a press, handed to Claude w
   await $.command.run({ command: 'pulse', args: '' } as never)
   const ui = await $.ui.mount(pane)
   await ui.press({ key: 'refresh' }) // the lists load in the background; wait for them
-  expect(await ui.find({ type: 'Text', text: 'WAITING ON YOUR REVIEW' })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'section:reviews', text: /^WAITING ON YOUR REVIEW/ })).toBeDefined()
   expect(await ui.find({ type: 'Button', key: `review:${OTHER_URL}` })).toBeDefined()
 
   await ui.press({ key: `review:${OTHER_URL}` })
@@ -180,5 +180,15 @@ test('x and c can be undone with z', async ($, on) => {
   expect(await ui.find({ type: 'Button', key: 'undo', text: /1 tracked item/ })).toBeDefined()
   await ui.press({ key: 'undo' })
   expect(await ui.find({ type: 'Button', key: `item:pr:${PR_URL}` })).toBeDefined()
+  await ui.unmount()
+})
+
+test('1, 2 and 3 jump to a section and open what is there', async ($, on) => {
+  on('process.run', fakeGh([]))
+  await $.command.run({ command: 'pulse-pr', args: PR_URL } as never)
+  const ui = await $.ui.mount(pane)
+  expect(await ui.find({ type: 'Button', key: 'section:tracking', text: /^TRACKING/ })).toBeDefined()
+  await ui.press({ key: 'section:tracking' })
+  expect(await ui.find({ type: 'Link', text: '#482' })).toBeDefined()
   await ui.unmount()
 })
