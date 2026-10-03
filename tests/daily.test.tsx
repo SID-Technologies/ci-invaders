@@ -1,7 +1,7 @@
 import type { RenderPropsOf } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 
-import { ciContext, parseReviewRequests } from '../hooks/lib'
+import { ciContext, nextRow, parseReviewRequests } from '../hooks/lib'
 import type { Pr } from '../types'
 
 const PR_URL = 'https://github.com/acme/rocket/pull/482'
@@ -153,4 +153,14 @@ test('tracked PRs are remembered for the next session', async ($, on) => {
   expect(saved.at(-1)).toEqual({ prs: [PR_URL], releases: [] })
   await $.command.run({ command: 'pulse-clear', args: '' } as never)
   expect(saved.at(-1)).toEqual({ prs: [], releases: [] })
+})
+
+test('arrows walk the rows, and hand back to scrolling past either end', () => {
+  const rows = ['item:a', 'item:b', 'add:c']
+  expect(nextRow(rows, 'item:a', 1)).toBe('item:b')
+  expect(nextRow(rows, 'add:c', -1)).toBe('item:b')
+  expect(nextRow(rows, 'add:c', 1)).toBeUndefined() // scroll on to what's below
+  expect(nextRow(rows, 'item:a', -1)).toBeUndefined() // scroll up to the actions and the detail
+  expect(nextRow(rows, 'refresh', 1)).toBe('item:a') // from the actions, down into the list
+  expect(nextRow(rows, 'refresh', -1)).toBeUndefined()
 })

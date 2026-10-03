@@ -191,6 +191,16 @@ export function withWaitingJobs(jobs: readonly Job[], planned: readonly PlannedJ
   return [...jobs, ...waiting]
 }
 
+/**
+ * The row an arrow lands on: the next or previous of `rows` from `current`, or
+ * undefined past either end (and ↑ from outside the list), where the board scrolls instead.
+ */
+export function nextRow(rows: readonly string[], current: string | undefined, by: number): string | undefined {
+  const at = current === undefined ? -1 : rows.indexOf(current)
+  if (at === -1) return by > 0 ? rows[0] : undefined
+  return rows[at + Math.sign(by)]
+}
+
 export function parseJobs(json: string): Job[] {
   const raw = JSON.parse(json) as { jobs?: RawCheck[] }
   return (raw.jobs ?? []).map(job => {

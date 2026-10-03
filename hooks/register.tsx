@@ -50,6 +50,7 @@ import {
   setupText,
   statusLine,
   summary,
+  nextRow,
   tally,
   tone,
   trouble,
@@ -454,6 +455,9 @@ async function poll($: $, everything = false): Promise<void> {
 
 /** Person-made moves of the board's focus ring so far: a newer one cancels a pending re-seat. */
 let ringMoves = 0
+/** The board's rows top to bottom as last drawn, by Button key, and the one holding the ring. */
+let rowKeys: readonly string[] = []
+let focusedKey: string | undefined
 
 /**
  * Open a tracked item. Its detail and buttons sit above the list, so opening one
@@ -466,7 +470,9 @@ async function openItem($: $, key: string): Promise<void> {
   await update($, selected, () => key)
   const move = ringMoves
   $.clock.after(RESEAT_MS, () => {
-    if (move === ringMoves) void $.ui.focus({ requestId: PANE, key: `${ITEM}${key}` }).catch(() => undefined)
+    if (move !== ringMoves) return
+    void $.ui.focus({ requestId: PANE, key: `${ITEM}${key}` }).catch(() => undefined)
+    void $.ui.scroll({ in: PANE, to: { key: `${ITEM}${key}` }, block: 'nearest' }).catch(() => undefined)
   })
   await prefetchLog($)
 }
@@ -940,8 +946,24 @@ export const register: Register = (on, options) => {
     const element = e.element ?? ''
     if (e.origin.kind === 'person') ringMoves += 1
     const result = await next(e)
+    if (!('deny' in result)) focusedKey = e.element
     if (element.startsWith(ITEM) && e.origin.kind === 'person') await openItem($, element.slice(ITEM.length))
     return result
+  })
+
+  // A board taller than its pane scrolls on the arrows, which would leave the
+  // selection behind. Like any list (lazygit, htop, a file picker), ↑↓ move the
+  // selection and the view follows it; the wheel and page keys still scroll, and
+  // past either end of the list the arrows scroll too, to reach what's above and below.
+  on('ui.scroll', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
+    if (e.origin.kind !== 'person' || e.pointer || Math.abs(e.by) !== 1) return next(e)
+    const to = nextRow(rowKeys, focusedKey, e.by)
+    if (!to) return next(e)
+    ringMoves += 1
+    await $.ui.focus({ requestId: PANE, key: to })
+    if (to.startsWith(ITEM)) await openItem($, to.slice(ITEM.length))
+    await $.ui.scroll({ in: PANE, to: { key: to }, block: 'nearest' })
+    return {}
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
@@ -1322,6 +1344,11 @@ export const register: Register = (on, options) => {
 
     const tracked = new Set(prList.map(pr => pr.url))
     const untracked = mine.prs.filter(pr => !tracked.has(pr.url))
+    rowKeys = [
+      ...[...prItems, ...actionItems].map(item => `${ITEM}${item.key}`),
+      ...(isSmall ? [] : untracked.map(pr => `${ADD}${pr.url}`)),
+      ...(isSmall || reviews.error ? [] : reviews.prs.filter(pr => !tracked.has(pr.url)).map(pr => `${REVIEW}${pr.url}`)),
+    ]
     const open = items.find(item => item.key === openKey)
     const detail = open ? ('pr' in open ? drawPr(open.pr) : drawRelease(open.release)) : null
 
