@@ -1,0 +1,54 @@
+{
+  "name": "gh-pulse",
+  "version": "0.1.0",
+  "description": "Watch PR checks and GitHub Actions release pipelines from inside Claude Code",
+  "author": {
+    "name": "SID Technologies"
+  },
+  "repository": "https://github.com/SID-Technologies/gh-pulse",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "claudeContext": {
+      "type": "boolean",
+      "title": "Tell Claude your CI status",
+      "description": "Attach a one-line CI summary to your prompts while anything is tracked",
+      "default": true
+    },
+    "confetti": {
+      "type": "boolean",
+      "title": "Merge confetti",
+      "description": "A burst of pixel confetti when a tracked PR merges",
+      "default": true
+    },
+    "invaders": {
+      "type": "boolean",
+      "title": "Space invaders for Actions",
+      "description": "Each Actions job is an invader: passing jobs get shot down, a failing one lands",
+      "default": true
+    },
+    "avatars": {
+      "type": "boolean",
+      "title": "Reviewer avatars",
+      "description": "Show reviewers' GitHub avatars next to the review status",
+      "default": true
+    },
+    "heatmap": {
+      "type": "boolean",
+      "title": "CI history",
+      "description": "Pass/fail history of each workflow on the base branch",
+      "default": true
+    },
+    "sounds": {
+      "type": "boolean",
+      "title": "Sounds",
+      "description": "A chime when checks pass, a thud when they fail (macOS)",
+      "default": false
+    },
+    "speech": {
+      "type": "boolean",
+      "title": "Spoken announcements",
+      "description": "Say transitions out loud, e.g. \"PR 131 is green\"",
+      "default": false
+    }
+  }
+}

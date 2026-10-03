@@ -1,0 +1,13 @@
+{
+  "name": "gh-pulse",
+  "owner": { "name": "SID Technologies" },
+  "metadata": { "description": "gh-pulse: PR and release pipeline tracking for Claude Code" },
+  "plugins": [
+    {
+      "name": "gh-pulse",
+      "source": "./",
+      "description": "Watch PR checks and GitHub Actions release pipelines from inside Claude Code",
+      "version": "0.1.0"
+    }
+  ]
+}

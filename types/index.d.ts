@@ -1,6 +1,14 @@
 export type CheckState = 'pass' | 'fail' | 'pending' | 'skip'
 
-export type Check = { name: string; state: CheckState; url?: string }
+export type Check = {
+  name: string
+  state: CheckState
+  url?: string
+  /** The Actions workflow the check belongs to; absent for status contexts. */
+  workflow?: string
+  /** Wall time of a finished check. */
+  durationMs?: number
+}
 
 export type Pr = {
   url: string
@@ -13,10 +21,19 @@ export type Pr = {
   review: string
   mergeable: string
   checks: Check[]
+  /** The branch it merges into: whose CI history the board shows. */
+  base?: string
+  /** Who reviewed or was asked to, latest state each. */
+  reviews?: Reviewer[]
   error?: string
 }
 
-export type Job = { name: string; state: CheckState; url?: string }
+export type Reviewer = { login: string; state: 'APPROVED' | 'CHANGES_REQUESTED' | 'COMMENTED' | 'REQUESTED' | 'DISMISSED' }
+
+/** One workflow's last runs on a branch, newest first. */
+export type History = { results: CheckState[]; at: number }
+
+export type Job = { name: string; state: CheckState; url?: string; durationMs?: number }
 
 export type Run = {
   id: number
@@ -25,6 +42,9 @@ export type Run = {
   url: string
   state: CheckState
   branch: string
+  /** Goes up each time the run is re-run. */
+  attempt?: number
+  durationMs?: number
   jobs: Job[]
 }
 
@@ -38,6 +58,33 @@ export type Release = {
   error?: string
 }
 
+/** One of your open PRs in this repo, listed on the board to track in a keypress. */
+export type OpenPr = {
+  url: string
+  number: number
+  title: string
+  isDraft: boolean
+  checks: Check[]
+}
+
+export type OpenPrs = { repo: string; prs: OpenPr[]; error?: string }
+
+/** A PR someone asked you to review, from any repo. */
+export type ReviewRequest = { url: string; number: number; title: string; repo: string }
+
+export type ReviewRequests = { prs: ReviewRequest[]; error?: string }
+
+/** Whether gh is there to ask: unchecked, ready, not installed, or not logged in. */
+export type GhState = 'unknown' | 'ready' | 'missing' | 'signed-out'
+
+export type Setup = { gh: GhState; os: 'mac' | 'linux' | 'windows' | 'unknown' }
+
+/** A burst on the board: confetti on merge, the invaders cleared or the ship lost. */
+export type Celebration = { key: string; kind: 'merged' | 'released' | 'scrubbed'; startFrame: number }
+
+/** Failed-step logs by job id, cleaned, newest lines last. */
+export type Logs = Record<string, { lines: string[]; at: number }>
+
 declare module 'claude-code' {
   interface PluginState {
     'gh-pulse': {
@@ -45,6 +92,23 @@ declare module 'claude-code' {
       releases: Release[]
       frame: number
       isBandHidden: boolean
+      /** The board item the cursor is on: `pr:<url>` or `release:<key>`. */
+      selected: string
+      /** The board shrunk to its tab strip. */
+      isMinimized: boolean
+      /** Your open PRs in the session's repo, tracked or not. */
+      openPrs: OpenPrs
+      /** What gh-pulse needs before it can watch anything. */
+      setup: Setup
+      celebration: Celebration | null
+      logs: Logs
+      reviewRequests: ReviewRequests
+      /** Which failing check's log the board shows: `<item key>#<check url>`. */
+      logCheck: string
+      /** Workflow history by `<repo>|<branch>|<workflow>`. */
+      history: Record<string, History>
+      /** Reviewer avatars by login: a PNG as base64, or '' when it could not be had. */
+      avatars: Record<string, string>
     }
   }
 }
