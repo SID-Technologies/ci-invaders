@@ -1379,7 +1379,8 @@ export const register: Register = (on, options) => {
       buttonKey: string
       onPress: () => unknown
     }) => (
-      <Box key={key} gap={1}>
+      // The open row, or the one the cursor is on, is filled the way Claude Code fills your messages, so it reads in any theme.
+      <Box key={key} gap={1} {...(isOpen || cursorKey === buttonKey ? { backgroundColor: 'userMessageBackground' } : {})}>
         <Text color="cyan" dimColor={!isOpen}>
           {marker}
         </Text>
