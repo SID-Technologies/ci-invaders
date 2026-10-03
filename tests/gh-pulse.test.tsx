@@ -222,6 +222,7 @@ test('the board lists what is tracked, your open PRs, and tracks one in a press'
   await ui.press({ key: `item:pr:${PR_URL}` })
   expect(await ui.find({ type: 'Link', text: '#482' })).toBeDefined()
   expect(await ui.find({ type: 'Link', text: '#483' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^TRACKING · \d of \d$/ })).toBeDefined() // where you are in the list
 
   // o opens the selected one in the browser, through gh.
   await ui.press({ key: 'open' })

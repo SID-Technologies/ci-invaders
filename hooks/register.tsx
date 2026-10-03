@@ -94,6 +94,7 @@ const isMinimized = atom({ plugin: 'gh-pulse', key: 'isMinimized' } as const, fa
 const setup = atom({ plugin: 'gh-pulse', key: 'setup' } as const, { gh: 'unknown', os: 'unknown' } as Setup)
 const celebration = atom({ plugin: 'gh-pulse', key: 'celebration' } as const, null as Celebration | null)
 const undo = atom({ plugin: 'gh-pulse', key: 'undo' } as const, null as Undo | null)
+const cursor = atom({ plugin: 'gh-pulse', key: 'cursor' } as const, '')
 const logs = atom({ plugin: 'gh-pulse', key: 'logs' } as const, {} as Logs)
 const reviewRequests = atom({ plugin: 'gh-pulse', key: 'reviewRequests' } as const, { prs: [] } as ReviewRequests)
 const logCheck = atom({ plugin: 'gh-pulse', key: 'logCheck' } as const, '')
@@ -981,7 +982,10 @@ export const register: Register = (on, options) => {
     const element = e.element ?? ''
     if (e.origin.kind === 'person') ringMoves += 1
     const result = await next(e)
-    if (!('deny' in result)) focusedKey = e.element
+    if (!('deny' in result)) {
+      focusedKey = e.element
+      await update($, cursor, () => e.element ?? '')
+    }
     if (element.startsWith(ITEM) && e.origin.kind === 'person') await openItem($, element.slice(ITEM.length))
     return result
   })
@@ -1019,6 +1023,7 @@ export const register: Register = (on, options) => {
     const f = await read($, frame)
     const isSmall = await read($, isMinimized)
     const kept = await read($, undo)
+    const cursorKey = await read($, cursor)
     const props = e.props as { bodyColumns?: number; isFocused?: boolean }
     const columns = Number(props.bodyColumns ?? 80)
     const inner = Math.max(20, columns - 2)
@@ -1380,11 +1385,26 @@ export const register: Register = (on, options) => {
 
     const tracked = new Set(prList.map(pr => pr.url))
     const untracked = mine.prs.filter(pr => !tracked.has(pr.url))
-    rowKeys = [
-      ...[...prItems, ...actionItems].map(item => `${ITEM}${item.key}`),
-      ...(isSmall ? [] : untracked.map(pr => `${ADD}${pr.url}`)),
-      ...(isSmall || reviews.error ? [] : reviews.prs.filter(pr => !tracked.has(pr.url)).map(pr => `${REVIEW}${pr.url}`)),
-    ]
+    // The three lists, like lazygit's panels: the one holding the cursor is lit, and says where in it you are.
+    const sections = {
+      tracking: [...prItems, ...actionItems].map(item => `${ITEM}${item.key}`),
+      mine: isSmall ? [] : untracked.map(pr => `${ADD}${pr.url}`),
+      reviews: isSmall || reviews.error ? [] : reviews.prs.filter(pr => !tracked.has(pr.url)).map(pr => `${REVIEW}${pr.url}`),
+    }
+    rowKeys = [...sections.tracking, ...sections.mine, ...sections.reviews]
+    type Section = keyof typeof sections
+    const active: Section = (Object.keys(sections) as Section[]).find(id => sections[id].includes(cursorKey)) ?? 'tracking'
+    const where = (id: Section) => {
+      const keys = sections[id]
+      const at = keys.indexOf(id === active && keys.includes(cursorKey) ? cursorKey : id === 'tracking' && openKey ? `${ITEM}${openKey}` : '')
+      return keys.length === 0 ? '' : at === -1 ? ` · ${keys.length}` : ` · ${at + 1} of ${keys.length}`
+    }
+    const Heading = ({ id, label }: { id: Section; label: string }) => (
+      <Text bold dimColor={id !== active} wrap="truncate-end">
+        {label}
+        {where(id)}
+      </Text>
+    )
     const open = items.find(item => item.key === openKey)
     const detail = open ? ('pr' in open ? drawPr(open.pr) : drawRelease(open.release)) : null
 
@@ -1431,9 +1451,7 @@ export const register: Register = (on, options) => {
         {!isSmall && detail}
 
         <Box flexDirection="column">
-          <Text bold dimColor>
-            TRACKING
-          </Text>
+          {Heading({ id: 'tracking', label: 'TRACKING' })}
           {items.length === 0 && (
             <Text dimColor>Nothing yet. Pick one of your PRs below, or /pulse-pr and /pulse-release.</Text>
           )}
@@ -1450,9 +1468,7 @@ export const register: Register = (on, options) => {
 
         {!isSmall && (
           <Box flexDirection="column">
-            <Text bold dimColor wrap="truncate-end">
-              YOUR OPEN PRS{mine.repo ? ` · ${mine.repo.split('/')[1] ?? mine.repo}` : ''}
-            </Text>
+            {Heading({ id: 'mine', label: `YOUR OPEN PRS${mine.repo ? ` · ${mine.repo.split('/')[1] ?? mine.repo}` : ''}` })}
             {mine.error && <Text color="yellow" wrap="truncate-end">{mine.error}</Text>}
             {!mine.error && untracked.length === 0 && (
               <Text dimColor>{mine.prs.length > 0 ? 'All tracked.' : 'None open.'}</Text>
@@ -1480,9 +1496,7 @@ export const register: Register = (on, options) => {
 
         {!isSmall && (reviews.prs.length > 0 || reviews.error) && (
           <Box flexDirection="column">
-            <Text bold dimColor>
-              WAITING ON YOUR REVIEW
-            </Text>
+            {Heading({ id: 'reviews', label: 'WAITING ON YOUR REVIEW' })}
             {reviews.error && <Text color="yellow" wrap="truncate-end">{reviews.error}</Text>}
             {!reviews.error && reviews.prs.every(pr => tracked.has(pr.url)) && <Text dimColor>All tracked.</Text>}
             {reviews.prs

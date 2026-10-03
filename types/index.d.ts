@@ -112,6 +112,8 @@ declare module 'claude-code' {
       setup: Setup
       celebration: Celebration | null
       undo: Undo | null
+      /** The board element holding the keyboard, by key: which section is active, and where in it. */
+      cursor: string
       logs: Logs
       reviewRequests: ReviewRequests
       /** Which failing check's log the board shows: `<item key>#<check url>`. */
