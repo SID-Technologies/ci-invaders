@@ -234,13 +234,20 @@ test('the board lists what is tracked, your open PRs, and tracks one in a press'
   expect(await ui.find({ type: 'Button', key: `add:${mineUrl}` })).toBeUndefined()
   expect(await ui.find({ type: 'Link', text: '#484' })).toBeDefined()
 
-  // Minimized: the list stays, detail and open PRs go; the pane asks for its rows.
-  await ui.press({ key: 'minimize' })
+  // List only: the list stays, detail and open PRs go; the pane asks for its rows.
+  await ui.press({ key: 'layout' })
   expect(await ui.find({ type: 'Link', text: '#484' })).toBeUndefined()
   expect(await ui.find({ type: 'Button', key: 'section:mine' })).toBeUndefined()
   expect(await ui.find({ type: 'Button', key: `item:pr:${PR_URL}` })).toBeDefined()
   expect(opened.at(-1)?.rows).toBe(7) // actions, help, TRACKING, "Pull requests", three PRs
-  await ui.press({ key: 'minimize' })
+
+  // Detail only: the open item, no lists; then back to both.
+  await ui.press({ key: 'layout' })
+  expect(await ui.find({ type: 'Link', text: '#484' })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: `item:pr:${PR_URL}` })).toBeUndefined()
+  expect(opened.at(-1)?.rows).toBeUndefined()
+  await ui.press({ key: 'layout' })
+  expect(await ui.find({ type: 'Button', key: 'section:mine' })).toBeDefined()
 
   // x removes the open one; it goes back to your open PRs.
   await ui.press({ key: 'remove' })

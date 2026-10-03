@@ -104,8 +104,8 @@ declare module 'claude-code' {
       isBandHidden: boolean
       /** The board item the cursor is on: `pr:<url>` or `release:<key>`. */
       selected: string
-      /** The board shrunk to its tab strip. */
-      isMinimized: boolean
+      /** What the board shows, as lazygit's screen modes: the list and the open item, just the list, or just the item. */
+      layout: 'both' | 'list' | 'detail'
       /** Your open PRs in the session's repo, tracked or not. */
       openPrs: OpenPrs
       /** What gh-pulse needs before it can watch anything. */

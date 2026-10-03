@@ -42,7 +42,7 @@ Color carries state and nothing else: red failed, amber running, green passed, g
 | `a` | Review with Claude (on a PR you've been asked to review) |
 | `o` | Open the selected PR or release on GitHub |
 | `x` | Remove the open item |
-| `m` | Minimize to just the list, or expand again |
+| `m` | Cycle the view: list and detail, list only, detail only (for long logs, or the invaders) |
 | `r` | Refresh now |
 | `c` | Clear everything |
 | `z` | Undo the last Remove or Clear (for 10s) |

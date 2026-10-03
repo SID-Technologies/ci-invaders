@@ -90,7 +90,10 @@ const releases = atom({ plugin: 'gh-pulse', key: 'releases' } as const, [])
 const frame = atom({ plugin: 'gh-pulse', key: 'frame' } as const, 0)
 const isBandHidden = atom({ plugin: 'gh-pulse', key: 'isBandHidden' } as const, false)
 const selected = atom({ plugin: 'gh-pulse', key: 'selected' } as const, '')
-const isMinimized = atom({ plugin: 'gh-pulse', key: 'isMinimized' } as const, false)
+const layout = atom({ plugin: 'gh-pulse', key: 'layout' } as const, 'both' as 'both' | 'list' | 'detail')
+/** m walks these in turn, and the button says where it goes next. */
+const NEXT_LAYOUT = { both: 'list', list: 'detail', detail: 'both' } as const
+const LAYOUT_LABEL = { both: 'List and detail', list: 'List only', detail: 'Detail only' } as const
 const setup = atom({ plugin: 'gh-pulse', key: 'setup' } as const, { gh: 'unknown', os: 'unknown' } as Setup)
 const celebration = atom({ plugin: 'gh-pulse', key: 'celebration' } as const, null as Celebration | null)
 const undo = atom({ plugin: 'gh-pulse', key: 'undo' } as const, null as Undo | null)
@@ -550,8 +553,8 @@ async function clearAll($: $): Promise<void> {
   await persistTracking($)
 }
 
-/** Rows the minimized board asks for: the actions, the hint, then each group's heading and rows. */
-async function minimizedRows($: $): Promise<number> {
+/** Rows the board asks for showing just the list: the actions, the hint, then each group's heading and rows. */
+async function listOnlyRows($: $): Promise<number> {
   const prCount = (await read($, prs)).length
   const releaseCount = (await read($, releases)).length
   const headings = (prCount > 0 ? 1 : 0) + (releaseCount > 0 ? 1 : 0) + (prCount > 0 && releaseCount > 0 ? 1 : 0)
@@ -559,17 +562,18 @@ async function minimizedRows($: $): Promise<number> {
 }
 
 async function openBoard($: $) {
-  const isSmall = await read($, isMinimized)
-  const opened = await $.ui.open({ id: PANE, title: TITLE, focus: true, rows: isSmall ? await minimizedRows($) : undefined })
+  const isSmall = (await read($, layout)) === 'list'
+  const opened = await $.ui.open({ id: PANE, title: TITLE, focus: true, rows: isSmall ? await listOnlyRows($) : undefined })
   void refreshLists($)
   return opened
 }
 
-async function toggleMinimized($: $): Promise<void> {
-  const isSmall = !(await read($, isMinimized))
-  await update($, isMinimized, () => isSmall)
+async function cycleLayout($: $): Promise<void> {
+  const shown = NEXT_LAYOUT[await read($, layout)]
+  await update($, layout, () => shown)
+  const isSmall = shown === 'list'
   // Re-asking sets the height; a size the person dragged still wins.
-  await $.ui.open({ id: PANE, title: TITLE, rows: isSmall ? await minimizedRows($) : undefined })
+  await $.ui.open({ id: PANE, title: TITLE, rows: isSmall ? await listOnlyRows($) : undefined })
 }
 
 const prKey = (pr: Pr) => `pr:${pr.url}`
@@ -1055,7 +1059,7 @@ export const register: Register = (on, options) => {
     const allLogs = await read($, logs)
     const chosenLog = await read($, logCheck)
     const f = await read($, frame)
-    const isSmall = await read($, isMinimized)
+    const shown = await read($, layout)
     const kept = await read($, undo)
     const cursorKey = await read($, cursor)
     const doing = await read($, busy)
@@ -1423,9 +1427,9 @@ export const register: Register = (on, options) => {
     const untracked = mine.prs.filter(pr => !tracked.has(pr.url))
     // The three lists, like lazygit's panels: the one holding the cursor is lit, and says where in it you are.
     const sections = {
-      tracking: [...prItems, ...actionItems].map(item => `${ITEM}${item.key}`),
-      mine: isSmall ? [] : untracked.map(pr => `${ADD}${pr.url}`),
-      reviews: isSmall || reviews.error ? [] : reviews.prs.filter(pr => !tracked.has(pr.url)).map(pr => `${REVIEW}${pr.url}`),
+      tracking: shown === 'detail' ? [] : [...prItems, ...actionItems].map(item => `${ITEM}${item.key}`),
+      mine: shown !== 'both' ? [] : untracked.map(pr => `${ADD}${pr.url}`),
+      reviews: shown !== 'both' || reviews.error ? [] : reviews.prs.filter(pr => !tracked.has(pr.url)).map(pr => `${REVIEW}${pr.url}`),
     }
     rowKeys = [...sections.tracking, ...sections.mine, ...sections.reviews]
     sectionRows = sections
@@ -1456,12 +1460,12 @@ export const register: Register = (on, options) => {
           <Box gap={3} flexWrap="wrap">
             <Button key="refresh" plain dimColor hotkey="r" label="Refresh" onPress={() => showWhile($, 'Refreshing', () => Promise.all([poll($, true), refreshLists($)]))} />
             <Button
-              key="minimize"
+              key="layout"
               plain
               dimColor
               hotkey="m"
-              label={isSmall ? 'Expand' : 'Minimize'}
-              onPress={() => toggleMinimized($)}
+              label={LAYOUT_LABEL[NEXT_LAYOUT[shown]]}
+              onPress={() => cycleLayout($)}
             />
             {open && 'pr' in open && open.pr.checks.some(c => c.state === 'fail') && (
               <Button key="fix" plain hotkey="f" label="Fix it" onPress={() => showWhile($, 'Reading the failing logs', () => fixIt($, openKey, e.surface))} />
@@ -1495,25 +1499,28 @@ export const register: Register = (on, options) => {
         </Box>
 
         {/* The opened item stays put under the actions, whatever the lists below do. */}
-        {!isSmall && detail}
+        {shown !== 'list' && detail}
+        {shown === 'detail' && !detail && <Text dimColor>Nothing open. Press m to bring the list back.</Text>}
 
-        <Box flexDirection="column">
-          {Heading({ id: 'tracking', label: 'TRACKING' })}
-          {items.length === 0 && (
-            <Text dimColor>Nothing yet. Pick one of your PRs below, or /pulse-pr and /pulse-release.</Text>
-          )}
-          {prItems.length > 0 && <Text dimColor>Pull requests</Text>}
-          {prItems.map(trackedRow)}
-          {prItems.length > 0 && actionItems.length > 0 && (
-            <Text key="tracking-rule" dimColor wrap="truncate">
-              {'─'.repeat(200)}
-            </Text>
-          )}
-          {actionItems.length > 0 && <Text dimColor>Actions</Text>}
-          {actionItems.map(trackedRow)}
-        </Box>
+        {shown !== 'detail' && (
+          <Box flexDirection="column">
+            {Heading({ id: 'tracking', label: 'TRACKING' })}
+            {items.length === 0 && (
+              <Text dimColor>Nothing yet. Pick one of your PRs below, or /pulse-pr and /pulse-release.</Text>
+            )}
+            {prItems.length > 0 && <Text dimColor>Pull requests</Text>}
+            {prItems.map(trackedRow)}
+            {prItems.length > 0 && actionItems.length > 0 && (
+              <Text key="tracking-rule" dimColor wrap="truncate">
+                {'─'.repeat(200)}
+              </Text>
+            )}
+            {actionItems.length > 0 && <Text dimColor>Actions</Text>}
+            {actionItems.map(trackedRow)}
+          </Box>
+        )}
 
-        {!isSmall && (
+        {shown === 'both' && (
           <Box flexDirection="column">
             {Heading({ id: 'mine', label: `YOUR OPEN PRS${mine.repo ? ` · ${mine.repo.split('/')[1] ?? mine.repo}` : ''}` })}
             {mine.error && <Text color="yellow" wrap="truncate-end">{mine.error}</Text>}
@@ -1541,7 +1548,7 @@ export const register: Register = (on, options) => {
           </Box>
         )}
 
-        {!isSmall && (reviews.prs.length > 0 || reviews.error) && (
+        {shown === 'both' && (reviews.prs.length > 0 || reviews.error) && (
           <Box flexDirection="column">
             {Heading({ id: 'reviews', label: 'WAITING ON YOUR REVIEW' })}
             {reviews.error && <Text color="yellow" wrap="truncate-end">{reviews.error}</Text>}
