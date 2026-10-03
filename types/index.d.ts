@@ -89,6 +89,9 @@ export type Setup = { gh: GhState; os: 'mac' | 'linux' | 'windows' | 'unknown' }
 /** A burst on the board: confetti on merge, the invaders cleared or the ship lost. */
 export type Celebration = { key: string; kind: 'merged' | 'released' | 'scrubbed'; startFrame: number }
 
+/** What Remove or Clear just took off the board, kept for a few seconds so z can put it back. */
+export type Undo = { label: string; prs: Pr[]; releases: Release[]; selected: string }
+
 /** Failed-step logs by job id, cleaned, newest lines last. */
 export type Logs = Record<string, { lines: string[]; at: number }>
 
@@ -108,6 +111,7 @@ declare module 'claude-code' {
       /** What gh-pulse needs before it can watch anything. */
       setup: Setup
       celebration: Celebration | null
+      undo: Undo | null
       logs: Logs
       reviewRequests: ReviewRequests
       /** Which failing check's log the board shows: `<item key>#<check url>`. */

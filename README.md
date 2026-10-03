@@ -44,6 +44,7 @@ Color carries state and nothing else: red failed, amber running, green passed, g
 | `m` | Minimize to just the list, or expand again |
 | `r` | Refresh now |
 | `c` | Clear everything |
+| `z` | Undo the last Remove or Clear (for 10s) |
 
 Polls every 15s via `gh`; your open PRs and review requests every minute; CI history every 5 minutes. Merged/closed PRs stop polling; finished releases are checked once a minute (or on `r` / `e`) so a re-run shows up.
 

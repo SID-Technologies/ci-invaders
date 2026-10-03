@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
-import type { Celebration, History, Logs, OpenPrs, Pr, Release, ReviewRequests, Run, Setup } from '../types'
+import type { Celebration, History, Logs, OpenPrs, Pr, Release, ReviewRequests, Run, Setup, Undo } from '../types'
 import {
   PR_URL,
   RELEASE_URL,
@@ -93,6 +93,7 @@ const selected = atom({ plugin: 'gh-pulse', key: 'selected' } as const, '')
 const isMinimized = atom({ plugin: 'gh-pulse', key: 'isMinimized' } as const, false)
 const setup = atom({ plugin: 'gh-pulse', key: 'setup' } as const, { gh: 'unknown', os: 'unknown' } as Setup)
 const celebration = atom({ plugin: 'gh-pulse', key: 'celebration' } as const, null as Celebration | null)
+const undo = atom({ plugin: 'gh-pulse', key: 'undo' } as const, null as Undo | null)
 const logs = atom({ plugin: 'gh-pulse', key: 'logs' } as const, {} as Logs)
 const reviewRequests = atom({ plugin: 'gh-pulse', key: 'reviewRequests' } as const, { prs: [] } as ReviewRequests)
 const logCheck = atom({ plugin: 'gh-pulse', key: 'logCheck' } as const, '')
@@ -477,7 +478,37 @@ async function openItem($: $, key: string): Promise<void> {
   await prefetchLog($)
 }
 
+/** How long z can put back what Remove or Clear took. */
+const UNDO_MS = 10_000
+/** Bumped by each removal, so an older one's timer doesn't drop a newer undo. */
+let removals = 0
+
+/** Keep what's about to go, so z can bring it back for a little while. */
+async function keepForUndo($: $, label: string): Promise<void> {
+  const kept: Undo = { label, prs: await read($, prs), releases: await read($, releases), selected: await read($, selected) }
+  await update($, undo, () => kept)
+  const mine = ++removals
+  $.clock.after(UNDO_MS, () => {
+    if (mine === removals) void update($, undo, () => null)
+  })
+}
+
+async function undoRemoval($: $): Promise<void> {
+  const kept = await read($, undo)
+  if (!kept) return
+  removals += 1
+  await update($, undo, () => null)
+  await update($, prs, () => kept.prs)
+  await update($, releases, () => kept.releases)
+  await update($, selected, () => kept.selected)
+  await refreshStatus($)
+  await persistTracking($)
+  $.ui.toast(`Put back: ${kept.label}`)
+}
+
 async function clearAll($: $): Promise<void> {
+  const count = (await read($, prs)).length + (await read($, releases)).length
+  if (count > 0) await keepForUndo($, `${count} tracked item${count === 1 ? '' : 's'}`)
   await update($, prs, () => [])
   await update($, releases, () => [])
   await update($, selected, () => '')
@@ -531,6 +562,9 @@ async function openInBrowser($: $, key: string): Promise<void> {
 }
 
 async function untrack($: $, key: string): Promise<void> {
+  const pr = (await read($, prs)).find(one => prKey(one) === key)
+  const release = (await read($, releases)).find(one => releaseKey(one) === key)
+  await keepForUndo($, pr ? `#${pr.number}` : (release?.label ?? 'the item'))
   await update($, prs, list => list.filter(pr => prKey(pr) !== key))
   await update($, releases, list => list.filter(r => releaseKey(r) !== key))
   await update($, selected, () => '')
@@ -789,8 +823,9 @@ export const register: Register = (on, options) => {
   })
 
   on('command.run', { command: 'pulse-clear' }, async $ => {
+    const hadAny = (await read($, prs)).length + (await read($, releases)).length > 0
     await clearAll($)
-    return { text: 'Cleared. Nothing tracked.' }
+    return { text: hadAny ? 'Cleared. Nothing tracked. Press z on the board within 10s to put it back.' : 'Nothing was tracked.' }
   })
 
   // Auto-track whatever Claude opens: PRs, releases, dispatched workflows.
@@ -983,6 +1018,7 @@ export const register: Register = (on, options) => {
     const chosenLog = await read($, logCheck)
     const f = await read($, frame)
     const isSmall = await read($, isMinimized)
+    const kept = await read($, undo)
     const props = e.props as { bodyColumns?: number; isFocused?: boolean }
     const columns = Number(props.bodyColumns ?? 80)
     const inner = Math.max(20, columns - 2)
@@ -1384,6 +1420,7 @@ export const register: Register = (on, options) => {
             {openKey && <Button key="open" plain dimColor hotkey="o" label="Open" onPress={() => openInBrowser($, openKey)} />}
             {openKey && <Button key="remove" plain dimColor hotkey="x" label="Remove" onPress={() => untrack($, openKey)} />}
             {items.length > 0 && <Button key="clear" plain dimColor hotkey="c" label="Clear" onPress={() => clearAll($)} />}
+            {kept && <Button key="undo" plain hotkey="z" label={`Undo (${kept.label})`} onPress={() => undoRemoval($)} />}
           </Box>
           <Text dimColor wrap="truncate-end">
             {props.isFocused ? '↑↓ move · enter select or track · o open on GitHub · esc back to prompt' : 'ctrl+x tab or click to use the keyboard'}

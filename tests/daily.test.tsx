@@ -164,3 +164,21 @@ test('arrows walk the rows, and hand back to scrolling past either end', () => {
   expect(nextRow(rows, 'refresh', 1)).toBe('item:a') // from the actions, down into the list
   expect(nextRow(rows, 'refresh', -1)).toBeUndefined()
 })
+
+test('x and c can be undone with z', async ($, on) => {
+  on('process.run', fakeGh([]))
+  await $.command.run({ command: 'pulse-pr', args: PR_URL } as never)
+  const ui = await $.ui.mount(pane)
+  await ui.press({ key: `item:pr:${PR_URL}` })
+  await ui.press({ key: 'remove' })
+  expect(await ui.find({ type: 'Button', key: `item:pr:${PR_URL}` })).toBeUndefined()
+  await ui.press({ key: 'undo' })
+  expect(await ui.find({ type: 'Button', key: `item:pr:${PR_URL}` })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'undo' })).toBeUndefined()
+
+  await ui.press({ key: 'clear' })
+  expect(await ui.find({ type: 'Button', key: 'undo', text: /1 tracked item/ })).toBeDefined()
+  await ui.press({ key: 'undo' })
+  expect(await ui.find({ type: 'Button', key: `item:pr:${PR_URL}` })).toBeDefined()
+  await ui.unmount()
+})
