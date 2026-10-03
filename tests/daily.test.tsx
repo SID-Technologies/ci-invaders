@@ -192,3 +192,22 @@ test('1, 2 and 3 jump to a section and open what is there', async ($, on) => {
   expect(await ui.find({ type: 'Link', text: '#482' })).toBeDefined()
   await ui.unmount()
 })
+
+test('the board says what an action is doing until it is done', async ($, on) => {
+  let release: () => void = () => undefined
+  const held = new Promise<void>(resolve => (release = resolve))
+  const gh = fakeGh([])
+  on('process.run', async (s, e) => {
+    if (e.argv.map(String).includes('rerun')) await held
+    return gh(s, e)
+  })
+  await $.command.run({ command: 'pulse-pr', args: PR_URL } as never)
+  const ui = await $.ui.mount(pane)
+  await ui.press({ key: `item:pr:${PR_URL}` })
+  const pressing = ui.press({ key: 'rerun' })
+  expect(await ui.find({ type: 'Text', text: /Rerunning the failed jobs/ })).toBeDefined()
+  release()
+  await pressing
+  expect(await ui.find({ type: 'Text', text: /Rerunning the failed jobs/ })).toBeUndefined()
+  await ui.unmount()
+})

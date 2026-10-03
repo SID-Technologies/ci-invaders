@@ -95,6 +95,17 @@ const setup = atom({ plugin: 'gh-pulse', key: 'setup' } as const, { gh: 'unknown
 const celebration = atom({ plugin: 'gh-pulse', key: 'celebration' } as const, null as Celebration | null)
 const undo = atom({ plugin: 'gh-pulse', key: 'undo' } as const, null as Undo | null)
 const cursor = atom({ plugin: 'gh-pulse', key: 'cursor' } as const, '')
+const busy = atom({ plugin: 'gh-pulse', key: 'busy' } as const, '')
+
+/** Say on the board what an action is doing until it's done, where the person is looking. */
+async function showWhile<T>($: $, label: string, work: () => Promise<T>): Promise<T> {
+  await update($, busy, () => label)
+  try {
+    return await work()
+  } finally {
+    await update($, busy, () => '')
+  }
+}
 const logs = atom({ plugin: 'gh-pulse', key: 'logs' } as const, {} as Logs)
 const reviewRequests = atom({ plugin: 'gh-pulse', key: 'reviewRequests' } as const, { prs: [] } as ReviewRequests)
 const logCheck = atom({ plugin: 'gh-pulse', key: 'logCheck' } as const, '')
@@ -791,7 +802,8 @@ export const register: Register = (on, options) => {
         const now = await read($, frame)
         // Invaders still bursting, falling or celebrating keep it turning too, so no frame freezes half-drawn.
         const isSettling = [...doneAt.values()].some(at => now - at < Math.max(LOSS_FRAMES, HIT_FRAMES + VICTORY_FRAMES))
-        if (!isLive(await read($, prs), await read($, releases)) && !isCelebrating(party, now) && !isSettling) return
+        const isBusy = (await read($, busy)) !== ''
+        if (!isLive(await read($, prs), await read($, releases)) && !isCelebrating(party, now) && !isSettling && !isBusy) return
         const n = ((await read($, frame)) + 1) % 100_000
         await update($, frame, () => n)
         // The status line shows only the spinner: redraw it when that turns.
@@ -1046,6 +1058,7 @@ export const register: Register = (on, options) => {
     const isSmall = await read($, isMinimized)
     const kept = await read($, undo)
     const cursorKey = await read($, cursor)
+    const doing = await read($, busy)
     const props = e.props as { bodyColumns?: number; isFocused?: boolean }
     const columns = Number(props.bodyColumns ?? 80)
     const inner = Math.max(20, columns - 2)
@@ -1440,7 +1453,7 @@ export const register: Register = (on, options) => {
         {/* Actions, then the help on a line of its own so nothing cuts it off. */}
         <Box flexDirection="column">
           <Box gap={3} flexWrap="wrap">
-            <Button key="refresh" plain dimColor hotkey="r" label="Refresh" onPress={() => Promise.all([poll($, true), refreshLists($)])} />
+            <Button key="refresh" plain dimColor hotkey="r" label="Refresh" onPress={() => showWhile($, 'Refreshing', () => Promise.all([poll($, true), refreshLists($)]))} />
             <Button
               key="minimize"
               plain
@@ -1450,13 +1463,13 @@ export const register: Register = (on, options) => {
               onPress={() => toggleMinimized($)}
             />
             {open && 'pr' in open && open.pr.checks.some(c => c.state === 'fail') && (
-              <Button key="fix" plain hotkey="f" label="Fix it" onPress={() => fixIt($, openKey, e.surface)} />
+              <Button key="fix" plain hotkey="f" label="Fix it" onPress={() => showWhile($, 'Reading the failing logs', () => fixIt($, openKey, e.surface))} />
             )}
             {open && (('pr' in open && open.pr.checks.some(c => c.state === 'fail')) || ('release' in open && open.release.runs.some(run => run.state === 'fail'))) && (
-              <Button key="rerun" plain dimColor hotkey="e" label="Rerun failed" onPress={() => rerunFailed($, openKey)} />
+              <Button key="rerun" plain dimColor hotkey="e" label="Rerun failed" onPress={() => showWhile($, 'Rerunning the failed jobs', () => rerunFailed($, openKey))} />
             )}
             {open && 'pr' in open && open.pr.checks.filter(c => c.state === 'fail').length > 1 && (
-              <Button key="log" plain dimColor hotkey="l" label="Next log" onPress={() => nextLog($, openKey)} />
+              <Button key="log" plain dimColor hotkey="l" label="Next log" onPress={() => showWhile($, 'Loading the log', () => nextLog($, openKey))} />
             )}
             {open && 'pr' in open && open.pr.checks.some(c => c.state === 'fail') && (
               <Button key="copy" plain dimColor hotkey="y" label="Copy log" onPress={() => copyLog($, openKey, e.surface)} />
@@ -1469,9 +1482,15 @@ export const register: Register = (on, options) => {
             {items.length > 0 && <Button key="clear" plain dimColor hotkey="c" label="Clear" onPress={() => clearAll($)} />}
             {kept && <Button key="undo" plain hotkey="z" label={`Undo (${kept.label})`} onPress={() => undoRemoval($)} />}
           </Box>
-          <Text dimColor wrap="truncate-end">
-            {props.isFocused ? '↑↓ move · enter select or track · o open on GitHub · esc back to prompt' : 'ctrl+x tab or click to use the keyboard'}
-          </Text>
+          {doing ? (
+            <Text color="yellow" wrap="truncate-end">
+              {glyph('pending', f)} {doing}…
+            </Text>
+          ) : (
+            <Text dimColor wrap="truncate-end">
+              {props.isFocused ? '↑↓ move · enter select or track · o open on GitHub · esc back to prompt' : 'ctrl+x tab or click to use the keyboard'}
+            </Text>
+          )}
         </Box>
 
         {/* The opened item stays put under the actions, whatever the lists below do. */}

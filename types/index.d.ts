@@ -114,6 +114,8 @@ declare module 'claude-code' {
       undo: Undo | null
       /** The board element holding the keyboard, by key: which section is active, and where in it. */
       cursor: string
+      /** What the board is busy doing for the person (`Rerunning failed jobs`), '' when nothing. */
+      busy: string
       logs: Logs
       reviewRequests: ReviewRequests
       /** Which failing check's log the board shows: `<item key>#<check url>`. */
