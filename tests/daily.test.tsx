@@ -211,3 +211,15 @@ test('the board says what an action is doing until it is done', async ($, on) =>
   expect(await ui.find({ type: 'Text', text: /Rerunning the failed jobs/ })).toBeUndefined()
   await ui.unmount()
 })
+
+test('h lists every key, and hides them again', async ($, on) => {
+  on('process.run', fakeGh([]))
+  await $.command.run({ command: 'pulse-pr', args: PR_URL } as never)
+  const ui = await $.ui.mount(pane)
+  expect(await ui.find({ type: 'Text', text: 'rerun the failed jobs' })).toBeUndefined()
+  await ui.press({ key: 'keys' })
+  expect(await ui.find({ type: 'Text', text: 'rerun the failed jobs' })).toBeDefined()
+  await ui.press({ key: 'keys' })
+  expect(await ui.find({ type: 'Text', text: 'rerun the failed jobs' })).toBeUndefined()
+  await ui.unmount()
+})

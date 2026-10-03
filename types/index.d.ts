@@ -116,6 +116,8 @@ declare module 'claude-code' {
       cursor: string
       /** What the board is busy doing for the person (`Rerunning failed jobs`), '' when nothing. */
       busy: string
+      /** The full key list is open (h). */
+      isKeysShown: boolean
       logs: Logs
       reviewRequests: ReviewRequests
       /** Which failing check's log the board shows: `<item key>#<check url>`. */

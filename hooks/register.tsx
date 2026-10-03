@@ -99,6 +99,23 @@ const celebration = atom({ plugin: 'gh-pulse', key: 'celebration' } as const, nu
 const undo = atom({ plugin: 'gh-pulse', key: 'undo' } as const, null as Undo | null)
 const cursor = atom({ plugin: 'gh-pulse', key: 'cursor' } as const, '')
 const busy = atom({ plugin: 'gh-pulse', key: 'busy' } as const, '')
+const isKeysShown = atom({ plugin: 'gh-pulse', key: 'isKeysShown' } as const, false)
+/** Every key the board answers, as lazygit's ? lists them. */
+const KEYS: readonly (readonly [string, string])[] = [
+  ['↑ ↓', 'move through the list; the row you land on opens'],
+  ['1 2 3', 'jump to Tracking, Your open PRs, Waiting on your review'],
+  ['pgup pgdn', 'scroll the board'],
+  ['enter', 'select a row, or track one of yours'],
+  ['f', 'fix it: the failing logs into the prompt'],
+  ['e', 'rerun the failed jobs'],
+  ['l  y', 'next failing log · copy the log shown'],
+  ['a', 'review with Claude'],
+  ['o', 'open on GitHub'],
+  ['x  c  z', 'remove · clear everything · undo either'],
+  ['r', 'refresh now'],
+  ['m', 'list and detail, list only, detail only'],
+  ['esc', 'back to the prompt'],
+]
 
 /** Say on the board what an action is doing until it's done, where the person is looking. */
 async function showWhile<T>($: $, label: string, work: () => Promise<T>): Promise<T> {
@@ -1063,6 +1080,7 @@ export const register: Register = (on, options) => {
     const kept = await read($, undo)
     const cursorKey = await read($, cursor)
     const doing = await read($, busy)
+    const isShowingKeys = await read($, isKeysShown)
     const props = e.props as { bodyColumns?: number; isFocused?: boolean }
     const columns = Number(props.bodyColumns ?? 80)
     const inner = Math.max(20, columns - 2)
@@ -1486,6 +1504,14 @@ export const register: Register = (on, options) => {
             {openKey && <Button key="remove" plain dimColor hotkey="x" label="Remove" onPress={() => untrack($, openKey)} />}
             {items.length > 0 && <Button key="clear" plain dimColor hotkey="c" label="Clear" onPress={() => clearAll($)} />}
             {kept && <Button key="undo" plain hotkey="z" label={`Undo (${kept.label})`} onPress={() => undoRemoval($)} />}
+            <Button
+              key="keys"
+              plain
+              dimColor
+              hotkey="h"
+              label={isShowingKeys ? 'Hide keys' : 'Keys'}
+              onPress={() => update($, isKeysShown, shown => !shown)}
+            />
           </Box>
           {doing ? (
             <Text color="yellow" wrap="truncate-end">
@@ -1493,12 +1519,27 @@ export const register: Register = (on, options) => {
             </Text>
           ) : (
             <Text dimColor wrap="truncate-end">
-              {props.isFocused ? '↑↓ move · enter select or track · o open on GitHub · esc back to prompt' : 'ctrl+x tab or click to use the keyboard'}
+              {props.isFocused ? '↑↓ move · 1 2 3 sections · enter select or track · h all keys · esc back to prompt' : 'ctrl+x tab or click to use the keyboard'}
             </Text>
           )}
         </Box>
 
         {/* The opened item stays put under the actions, whatever the lists below do. */}
+        {isShowingKeys && (
+          <Box key="keys-list" flexDirection="column">
+            {KEYS.map(([keys, does]) => (
+              <Box key={`key-${keys}`} gap={1}>
+                <Box width={10} flexShrink={0}>
+                  <Text color="cyan">{keys}</Text>
+                </Box>
+                <Text dimColor wrap="truncate-end">
+                  {does}
+                </Text>
+              </Box>
+            ))}
+          </Box>
+        )}
+
         {shown !== 'list' && detail}
         {shown === 'detail' && !detail && <Text dimColor>Nothing open. Press m to bring the list back.</Text>}
 

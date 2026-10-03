@@ -44,6 +44,7 @@ Color carries state and nothing else: red failed, amber running, green passed, g
 | `x` | Remove the open item |
 | `m` | Cycle the view: list and detail, list only, detail only (for long logs, or the invaders) |
 | `r` | Refresh now |
+| `h` | Show every key, or hide them |
 | `c` | Clear everything |
 | `z` | Undo the last Remove or Clear (for 10s) |
 
