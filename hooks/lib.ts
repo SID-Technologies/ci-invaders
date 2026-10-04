@@ -87,6 +87,7 @@ export function parsePr(json: string): Pr {
     mergeable: String(raw.mergeable ?? 'UNKNOWN'),
     checks: parseChecks(raw.statusCheckRollup),
     base: raw.baseRefName ? String(raw.baseRefName) : undefined,
+    endedAt: raw.mergedAt ? String(raw.mergedAt) : raw.closedAt ? String(raw.closedAt) : undefined,
     reviews: parseReviewers(raw.latestReviews, raw.reviewRequests),
   }
 }
@@ -786,4 +787,15 @@ export function scrollWindow(start: number, at: number, total: number, size: num
 export function clip(text: string, width: number): string {
   if (width < 1) return ''
   return text.length <= width ? text : `${text.slice(0, Math.max(0, width - 1))}…`
+}
+
+// Merged or closed PRs, and releases that finished without failing.
+export function isFinished(item: Pr | Release): boolean {
+  if ('checks' in item) return item.state !== 'OPEN'
+  return item.runs.length > 0 && !isReleaseRunning(item) && releaseState(item) !== 'fail'
+}
+
+export function isStale(pr: Pr, now: number, afterMs: number): boolean {
+  const ended = Date.parse(pr.endedAt ?? '')
+  return pr.state !== 'OPEN' && Number.isFinite(ended) && now - ended > afterMs
 }

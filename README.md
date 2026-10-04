@@ -37,18 +37,22 @@ The lists sit at the top at a fixed height and scroll, so the open item below th
 
 | Key | Does |
 | --- | --- |
-| `↑` `↓` | Move through the lists; the row you land on opens |
+| `↑` `↓` | Move through the lists |
 | `1` `2` `3` | Jump to a list, back to where you were in it |
-| `enter` | Open a tracked row, or track one of your PRs or review requests |
+| `enter` | Pin a tracked row in the detail, or track one of your PRs or review requests |
 | `f` | Fix it: failing checks and logs into the prompt |
 | `e` | Rerun failed jobs |
 | `l` / `y` | Next failing log / copy the log shown |
 | `a` | Ask Claude to review a PR you were asked to review |
 | `o` | Open on GitHub |
-| `x` / `c` / `z` | Remove the open item / clear everything / undo either for 10s |
+| `x` | Remove the highlighted row |
+| `d` | Clear finished: merged or closed PRs and releases that passed |
+| `c` / `z` | Clear everything / undo any removal for 10s |
 | `m` | Lists and detail, lists only, detail only |
 | `r` | Refresh |
 | `h` | Show all keys |
+
+The pinned item stays in the detail while you move around the lists. Merged and closed PRs drop off by themselves 10 minutes after they end.
 
 Buttons only appear when they apply. gh-pulse polls every 15 seconds; your PRs and review requests every minute; CI history every 5 minutes. Finished releases are rechecked every minute so a re-run shows up.
 

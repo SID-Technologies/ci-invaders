@@ -20,6 +20,7 @@ export type Pr = {
   mergeable: string
   checks: Check[]
   base?: string
+  endedAt?: string // when it merged or closed
   reviews?: Reviewer[]
   error?: string
 }

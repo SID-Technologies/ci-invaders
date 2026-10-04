@@ -16,12 +16,14 @@ import {
   duration,
   fixPrompt,
   glyph,
+  isFinished,
   isFlaky,
   isLive,
   isPlainLogin,
   isPrCreate,
   isReleaseCreate,
   isReleaseRunning,
+  isStale,
   mergeLabel,
   nextRow,
   overall,
@@ -84,6 +86,7 @@ const OPEN_PRS_EVERY = 4 // polls between refreshes of your PRs and review reque
 const RESEAT_MS = 80 // long enough for the board to redraw
 const UNDO_MS = 10_000
 const HISTORY_TTL_MS = 5 * 60_000
+const AUTO_CLEAR_MS = 10 * 60_000 // merged or closed PRs drop off after this
 
 const MAX_PRS = 5
 const MAX_RELEASES = 3
@@ -98,7 +101,7 @@ const WORKFLOW_COLUMN = 16
 const TIME_COLUMN = 8
 
 const PR_FIELDS =
-  'number,title,url,state,isDraft,reviewDecision,mergeable,statusCheckRollup,headRefName,baseRefName,latestReviews,reviewRequests'
+  'number,title,url,state,isDraft,reviewDecision,mergeable,statusCheckRollup,headRefName,baseRefName,latestReviews,reviewRequests,mergedAt,closedAt'
 const OPEN_PR_FIELDS = 'number,title,url,isDraft,statusCheckRollup'
 const RUN_FIELDS = 'databaseId,name,workflowName,displayTitle,url,status,conclusion,headBranch,startedAt,updatedAt,attempt'
 
@@ -436,6 +439,10 @@ async function poll($: $, everything = false): Promise<void> {
   isEverythingDue = false
   try {
     if (!(await checkGh($))) return
+    const now = Date.now()
+    if ((await read($, prs)).some(pr => isStale(pr, now, AUTO_CLEAR_MS))) {
+      await update($, prs, list => list.filter(pr => !isStale(pr, now, AUTO_CLEAR_MS)))
+    }
     for (const pr of await read($, prs)) {
       if (pr.state !== 'OPEN') continue
       try {
@@ -481,16 +488,17 @@ function orderOf(key: string): number {
 }
 
 const KEYS: readonly (readonly [string, string])[] = [
-  ['↑ ↓', 'move through the list; the row you land on opens'],
+  ['↑ ↓', 'move through the lists'],
   ['1 2 3', 'jump to Tracking, Your open PRs, Waiting on your review'],
   ['pgup pgdn', 'scroll the board'],
-  ['enter', 'select a row, or track one of yours'],
+  ['enter', 'pin a row in the detail, or track one of yours'],
   ['f', 'fix it: the failing logs into the prompt'],
   ['e', 'rerun the failed jobs'],
   ['l  y', 'next failing log · copy the log shown'],
   ['a', 'review with Claude'],
   ['o', 'open on GitHub'],
-  ['x  c  z', 'remove · clear everything · undo either'],
+  ['x  d', 'remove the highlighted row · clear finished'],
+  ['c  z', 'clear everything · undo any removal'],
   ['r', 'refresh now'],
   ['m', 'list and detail, list only, detail only'],
   ['esc', 'back to the prompt'],
@@ -511,7 +519,6 @@ async function goToRow($: $, key: string): Promise<void> {
   // Moves the list's window first if the row is scrolled out of it.
   await update($, cursor, () => key)
   await $.ui.focus({ requestId: PANE, key }).catch(() => undefined)
-  if (key.startsWith(ITEM)) await openItem($, key.slice(ITEM.length))
   await $.ui.scroll({ in: PANE, to: { key }, block: 'nearest' }).catch(() => undefined)
 }
 
@@ -618,7 +625,17 @@ async function untrack($: $, key: string): Promise<void> {
   await keepForUndo($, pr ? `#${pr.number}` : (release?.label ?? 'the item'))
   await update($, prs, list => list.filter(pr => prKey(pr) !== key))
   await update($, releases, list => list.filter(r => releaseKey(r) !== key))
-  await update($, selected, () => '')
+  await update($, selected, open => (open === key ? '' : open))
+  await refreshStatus($)
+  await persistTracking($)
+}
+
+async function clearFinished($: $): Promise<void> {
+  const done = [...(await read($, prs)), ...(await read($, releases))].filter(isFinished).length
+  if (done === 0) return
+  await keepForUndo($, `${done} finished`)
+  await update($, prs, list => list.filter(pr => !isFinished(pr)))
+  await update($, releases, list => list.filter(r => !isFinished(r)))
   await refreshStatus($)
   await persistTracking($)
 }
@@ -1041,7 +1058,6 @@ export const register: Register = (on, options) => {
       for (const [id, rows] of Object.entries(sectionRows)) if (rows.includes(element)) lastInSection.set(id, element)
       await update($, cursor, () => element)
     }
-    if (isPerson && element.startsWith(ITEM)) await openItem($, element.slice(ITEM.length))
     return result
   })
 
@@ -1577,6 +1593,9 @@ export const register: Register = (on, options) => {
     const openPr = open && 'pr' in open ? open.pr : undefined
     const failingChecks = openPr?.checks.filter(c => c.state === 'fail') ?? []
     const hasFailedRuns = open && 'release' in open && open.release.runs.some(run => run.state === 'fail')
+    // x removes the highlighted tracked row, or the pinned one when the cursor is elsewhere.
+    const removable = cursorKey.startsWith(ITEM) && sections.tracking.includes(cursorKey) ? cursorKey.slice(ITEM.length) : openKey
+    const finishedCount = [...prList, ...releaseList].filter(isFinished).length
 
     const trackingBlock = ListBlock({
       id: 'tracking',
@@ -1630,7 +1649,10 @@ export const register: Register = (on, options) => {
               <Button key="ask" plain hotkey="a" label="Review with Claude" onPress={() => askForReview($, openPr.url)} />
             )}
             {openKey && <Button key="open" plain dimColor hotkey="o" label="Open" onPress={() => openInBrowser($, openKey)} />}
-            {openKey && <Button key="remove" plain dimColor hotkey="x" label="Remove" onPress={() => untrack($, openKey)} />}
+            {removable && <Button key="remove" plain dimColor hotkey="x" label="Remove" onPress={() => untrack($, removable)} />}
+            {finishedCount > 0 && (
+              <Button key="clear-finished" plain dimColor hotkey="d" label={`Clear finished (${finishedCount})`} onPress={() => clearFinished($)} />
+            )}
             {items.length > 0 && <Button key="clear" plain dimColor hotkey="c" label="Clear" onPress={() => clearAll($)} />}
             {kept && <Button key="undo" plain hotkey="z" label={`Undo (${kept.label})`} onPress={() => undoRemoval($)} />}
             <Button
@@ -1648,7 +1670,7 @@ export const register: Register = (on, options) => {
             </Text>
           ) : (
             <Text dimColor wrap="truncate-end">
-              {props.isFocused ? '↑↓ move · 1 2 3 sections · enter select or track · h all keys · esc back to prompt' : 'ctrl+x tab or click to use the keyboard'}
+              {props.isFocused ? '↑↓ move · enter pin · 1 2 3 lists · h all keys · esc back to prompt' : 'ctrl+x tab or click to use the keyboard'}
             </Text>
           )}
         </Box>

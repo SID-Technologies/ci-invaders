@@ -1,7 +1,7 @@
 import type { RenderPropsOf } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 
-import { ciContext, clip, nextRow, parseReviewRequests, scrollWindow } from '../hooks/lib'
+import { ciContext, clip, isFinished, isStale, nextRow, parseReviewRequests, scrollWindow } from '../hooks/lib'
 import type { Pr } from '../types'
 
 const PR_URL = 'https://github.com/acme/rocket/pull/482'
@@ -183,12 +183,23 @@ test('z undoes remove and clear', async ($, on) => {
   await ui.unmount()
 })
 
-test('section hotkeys jump to and open the first row', async ($, on) => {
+test('arrows and jumps move the cursor; enter pins a row in the detail', async ($, on) => {
   on('process.run', fakeGh([]))
+  on('ui.focus', async () => ({}) as never)
   await $.command.run({ command: 'pulse-pr', args: PR_URL } as never)
+  await $.command.run({ command: 'pulse-pr', args: OTHER_URL } as never)
   const ui = await $.ui.mount(pane)
-  expect(await ui.find({ type: 'Button', key: 'section:tracking', text: /^TRACKING/ })).toBeDefined()
-  await ui.press({ key: 'section:tracking' })
+  await ui.press({ key: `item:pr:${PR_URL}` }) // enter pins #482
+  expect(await ui.find({ type: 'Link', text: '#482' })).toBeDefined()
+
+  // Moving the cursor to #9 (as an arrow key does) leaves #482 pinned.
+  await $.ui.focus({ component: 'Pane', requestId: 'gh-pulse', plugin: 'gh-pulse', element: `item:pr:${OTHER_URL}`, origin: { kind: 'person' } } as never)
+  expect(await ui.find({ type: 'Link', text: '#482' })).toBeDefined()
+  expect(await ui.find({ type: 'Link', text: '#9' })).toBeUndefined()
+
+  // x removes the highlighted row, not the pinned one.
+  await ui.press({ key: 'remove' })
+  expect(await ui.find({ type: 'Button', key: `item:pr:${OTHER_URL}` })).toBeUndefined()
   expect(await ui.find({ type: 'Link', text: '#482' })).toBeDefined()
   await ui.unmount()
 })
@@ -248,4 +259,31 @@ test('long lists show a fixed window and say how many are hidden', async ($, on)
   expect(await ui.find({ type: 'Text', text: '↓ 4 below' })).toBeDefined()
   expect(await ui.find({ type: 'Button', key: 'section:mine', text: /YOUR OPEN PRS · 7/ })).toBeDefined()
   await ui.unmount()
+})
+
+test('d clears merged PRs and finished releases; merged PRs also age out', async ($, on) => {
+  const gh = fakeGh([])
+  on('process.run', async (s, e) => {
+    const argv = e.argv.map(String)
+    if (argv[1] === 'pr' && argv[2] === 'view' && argv[3] === OTHER_URL) {
+      return ok(JSON.stringify({ ...JSON.parse(prJson(OTHER_URL)), state: 'MERGED', mergedAt: '2026-10-04T10:00:00Z' }))
+    }
+    return gh(s, e)
+  })
+  await $.command.run({ command: 'pulse-pr', args: PR_URL } as never)
+  await $.command.run({ command: 'pulse-pr', args: OTHER_URL } as never)
+  const ui = await $.ui.mount(pane)
+  expect(await ui.find({ type: 'Button', key: 'clear-finished', text: /\(1\)/ })).toBeDefined()
+  await ui.press({ key: 'clear-finished' })
+  expect(await ui.find({ type: 'Button', key: `item:pr:${OTHER_URL}` })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', key: `item:pr:${PR_URL}` })).toBeDefined()
+  await ui.press({ key: 'undo' })
+  expect(await ui.find({ type: 'Button', key: `item:pr:${OTHER_URL}` })).toBeDefined()
+  await ui.unmount()
+
+  const merged = { state: 'MERGED', endedAt: '2026-10-04T10:00:00Z', checks: [] } as never
+  expect(isFinished(merged)).toBe(true)
+  expect(isStale(merged, Date.parse('2026-10-04T10:05:00Z'), 10 * 60_000)).toBe(false)
+  expect(isStale(merged, Date.parse('2026-10-04T10:11:00Z'), 10 * 60_000)).toBe(true)
+  expect(isStale({ state: 'OPEN', checks: [] } as never, Date.now(), 0)).toBe(false)
 })
