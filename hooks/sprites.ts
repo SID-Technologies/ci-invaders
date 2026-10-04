@@ -175,18 +175,19 @@ export type Ship = {
   cooldown: number
   seed: number
   shots: { x: number; y: number }[]
-  sparks: { x: number; y: number; age: number }[]
+  /** Invaders a shot just struck, by slot: they flash white for a few frames. */
+  hits: { slot: number; age: number }[]
 }
 
 export function newShip(): Ship {
-  return { x: NaN, fx: NaN, dir: 1, dwell: 0, cooldown: 0, seed: 1, shots: [], sparks: [] }
+  return { x: NaN, fx: NaN, dir: 1, dwell: 0, cooldown: 0, seed: 1, shots: [], hits: [] }
 }
 
 const INVADER_PALETTE: Record<string, number> = {
   a: 0xfacc15, // running
   r: 0xf87171, // failed
   s: 0x22d3ee, // ship
-  w: 0xf8fafc, // shots and sparks
+  w: 0xf8fafc, // shots, and an invader that's hit
   o: 0xfb923c, // fire
   y: 0xfde047, // fire core
   g: 0x4b5563, // ground
@@ -221,6 +222,8 @@ const SHIP_Y = GROUND_Y - 4
 const LAND_Y = SHIP_Y - 1
 /** Pixels a shot climbs per frame. */
 const SHOT_SPEED = 2
+/** Frames a struck invader flashes for. */
+const FLASH_FRAMES = 3
 /** Frames between shots. */
 const RELOAD_FRAMES = 7
 /** Frames the ship stays under its target before picking another. */
@@ -386,8 +389,8 @@ export function invadersFrame(args: { invaders: readonly Invader[]; frame: numbe
     if (ship.fx >= 1 + room) [ship.fx, ship.dir] = [1 + room, -1]
     if (ship.fx <= 1) [ship.fx, ship.dir] = [1, 1]
     for (const shot of ship.shots) shot.y -= SHOT_SPEED
-    for (const spark of ship.sparks) spark.age++
-    ship.sparks = ship.sparks.filter(spark => spark.age < 3)
+    for (const hit of ship.hits) hit.age++
+    ship.hits = ship.hits.filter(hit => hit.age < FLASH_FRAMES)
     ship.cooldown = Math.max(0, ship.cooldown - 1)
     // A shot stops at the first running invader in its way.
     const targets = running.filter(inv => inv.seenAt === undefined || f - inv.seenAt >= ENTER_FRAMES)
@@ -396,7 +399,7 @@ export function invadersFrame(args: { invaders: readonly Invader[]; frame: numbe
         const at = homeOf(inv.slot)
         return shot.x >= at.x && shot.x <= at.x + 4 && shot.y <= at.y + 3 && shot.y >= at.y
       })
-      if (struck) ship.sparks.push({ x: shot.x, y: homeOf(struck.slot).y + 3, age: 0 })
+      if (struck) ship.hits = [...ship.hits.filter(hit => hit.slot !== struck.slot), { slot: struck.slot, age: 0 }]
       return !struck && shot.y > 0
     })
 
@@ -441,7 +444,8 @@ export function invadersFrame(args: { invaders: readonly Invader[]; frame: numbe
 
   for (const inv of invaders) {
     const at = placeOf(inv)
-    if (inv.state === 'pending') stamp(p, tinted(INVADER[legs]!, 'a'), at.x, at.y, pal)
+    const isHit = ship.hits.some(hit => hit.slot === inv.slot)
+    if (inv.state === 'pending') stamp(p, tinted(INVADER[legs]!, isHit ? 'w' : 'a'), at.x, at.y, pal)
     else if (inv.state === 'fail') {
       const fell = Math.min(1, ago(inv) / FALL_FRAMES)
       stamp(p, tinted(INVADER[legs]!, 'r'), at.x, Math.round(at.y + fell * (LAND_Y - at.y)), pal)
@@ -471,13 +475,6 @@ export function invadersFrame(args: { invaders: readonly Invader[]; frame: numbe
   for (const shot of ship.shots) {
     set(p, shot.x, shot.y, pal.w ?? 0)
     set(p, shot.x, shot.y + 1, pal.w ?? 0)
-  }
-  for (const spark of ship.sparks) {
-    set(p, spark.x, spark.y - spark.age, pal.y ?? 0)
-    if (spark.age > 0) {
-      set(p, spark.x - spark.age, spark.y, pal.o ?? 0)
-      set(p, spark.x + spark.age, spark.y, pal.o ?? 0)
-    }
   }
 
   if (isCleared) {
