@@ -300,10 +300,11 @@ export function glyph(state: Shown, frame = 0): string {
       return '✕'
     case 'skip':
       return '–'
+    // ● and ○ draw two cells wide in some terminals, which breaks alignment.
     case 'merged':
-      return '●'
+      return '✓'
     case 'closed':
-      return '○'
+      return '✕'
     default:
       return at(SPINNER, Math.floor(frame / SPINNER_EVERY))
   }
@@ -713,7 +714,7 @@ export function reviewerGlyph(state: Reviewer['state']): { glyph: string; color:
     case 'COMMENTED':
       return { glyph: '…', color: 'gray' }
     default:
-      return { glyph: '○', color: 'yellow' }
+      return { glyph: '?', color: 'yellow' }
   }
 }
 
@@ -771,4 +772,18 @@ export function nextRow(rows: readonly string[], current: string | undefined, by
   const at = current === undefined ? -1 : rows.indexOf(current)
   if (at === -1) return by > 0 ? rows[0] : undefined
   return rows[at + Math.sign(by)]
+}
+
+// First index of a `size`-row window over `total` rows that keeps row `at`
+// in view, moving no further than it has to from `start`. `at` -1 keeps it put.
+export function scrollWindow(start: number, at: number, total: number, size: number): number {
+  let next = Math.min(Math.max(0, start), Math.max(0, total - size))
+  if (at >= 0 && at < next) next = at
+  if (at >= 0 && at >= next + size) next = at - size + 1
+  return next
+}
+
+export function clip(text: string, width: number): string {
+  if (width < 1) return ''
+  return text.length <= width ? text : `${text.slice(0, Math.max(0, width - 1))}…`
 }

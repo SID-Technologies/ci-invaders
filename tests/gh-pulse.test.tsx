@@ -214,7 +214,8 @@ test('board lists tracked items and your PRs, and tracks on press', async ($, on
   expect(await ui.find({ type: 'Link', text: '#483' })).toBeDefined()
 
   // Your open PRs: the untracked one only, ready to track.
-  expect(await ui.find({ type: 'Button', key: 'section:mine', text: /YOUR OPEN PRS · rocket/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'section:mine', text: /^YOUR OPEN PRS/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'rocket' })).toBeDefined() // the repo column
   expect(await ui.find({ type: 'Button', key: `add:${mineUrl}` })).toBeDefined()
   expect(await ui.find({ type: 'Button', key: `add:${PR_URL}` })).toBeUndefined()
 
@@ -234,12 +235,13 @@ test('board lists tracked items and your PRs, and tracks on press', async ($, on
   expect(await ui.find({ type: 'Button', key: `add:${mineUrl}` })).toBeUndefined()
   expect(await ui.find({ type: 'Link', text: '#484' })).toBeDefined()
 
-  // List only: the list stays, detail and open PRs go; the pane asks for its rows.
+  // List only: the lists stay, the detail goes; the pane asks for a fixed height.
   await ui.press({ key: 'layout' })
   expect(await ui.find({ type: 'Link', text: '#484' })).toBeUndefined()
-  expect(await ui.find({ type: 'Button', key: 'section:mine' })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', key: 'section:mine' })).toBeDefined()
   expect(await ui.find({ type: 'Button', key: `item:pr:${PR_URL}` })).toBeDefined()
-  expect(opened.at(-1)?.rows).toBe(7) // actions, help, TRACKING, "Pull requests", three PRs
+  // actions + help, gap, tracking (5 + heading + scroll line), gap, two stacked side lists (3 + 2 each) and their gap
+  expect(opened.at(-1)?.rows).toBe(2 + 1 + 7 + 1 + 11)
 
   // Detail only: the open item, no lists; then back to both.
   await ui.press({ key: 'layout' })

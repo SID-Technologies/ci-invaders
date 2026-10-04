@@ -1,7 +1,7 @@
 import type { RenderPropsOf } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 
-import { ciContext, nextRow, parseReviewRequests } from '../hooks/lib'
+import { ciContext, clip, nextRow, parseReviewRequests, scrollWindow } from '../hooks/lib'
 import type { Pr } from '../types'
 
 const PR_URL = 'https://github.com/acme/rocket/pull/482'
@@ -221,5 +221,31 @@ test('h toggles the key list', async ($, on) => {
   expect(await ui.find({ type: 'Text', text: 'rerun the failed jobs' })).toBeDefined()
   await ui.press({ key: 'keys' })
   expect(await ui.find({ type: 'Text', text: 'rerun the failed jobs' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('scrollWindow moves only as far as it must; clip ends in an ellipsis', () => {
+  expect(scrollWindow(0, 2, 10, 5)).toBe(0)
+  expect(scrollWindow(0, 5, 10, 5)).toBe(1)
+  expect(scrollWindow(4, 2, 10, 5)).toBe(2)
+  expect(scrollWindow(8, -1, 10, 5)).toBe(5) // clamped when the list shrinks
+  expect(scrollWindow(3, 0, 2, 5)).toBe(0)
+  expect(clip('feat: rollback ui', 8)).toBe('feat: r…')
+  expect(clip('short', 8)).toBe('short')
+})
+
+test('long lists show a fixed window and say how many are hidden', async ($, on) => {
+  const gh = fakeGh([])
+  const mine = Array.from({ length: 7 }, (_, i) => ({
+    number: 100 + i, title: `feat: change number ${i} with a long title that will not fit on one narrow line`, url: `https://github.com/acme/rocket/pull/${100 + i}`, isDraft: false, statusCheckRollup: [],
+  }))
+  on('process.run', async (s, e) => (e.argv.map(String)[2] === 'list' ? ok(JSON.stringify(mine)) : gh(s, e)))
+  on('ui.open', async () => ({ value: { isPlaced: true } }))
+  await $.command.run({ command: 'pulse', args: '' } as never)
+  const ui = await $.ui.mount(pane)
+  await ui.press({ key: 'refresh' })
+  expect((await ui.findAll({ type: 'Button' })).filter(b => String(b.key).startsWith('add:'))).toHaveLength(3)
+  expect(await ui.find({ type: 'Text', text: '↓ 4 below' })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'section:mine', text: /YOUR OPEN PRS · 7/ })).toBeDefined()
   await ui.unmount()
 })
