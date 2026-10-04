@@ -27,7 +27,7 @@ const FAIL = new Set([
 ])
 const SKIP = new Set(['SKIPPED', 'NEUTRAL'])
 
-/** One verdict from a CheckRun's status/conclusion or a StatusContext's state. */
+// Works for a CheckRun's status/conclusion and a StatusContext's state.
 export function checkState(status?: string, conclusion?: string): CheckState {
   const s = (status ?? '').toUpperCase()
   const c = (conclusion ?? '').toUpperCase()
@@ -39,7 +39,6 @@ export function checkState(status?: string, conclusion?: string): CheckState {
   return 'pending'
 }
 
-/** Wall time between two timestamps, if both are real and in order. */
 export function elapsed(from?: string, to?: string): number | undefined {
   const start = Date.parse(from ?? '')
   const end = Date.parse(to ?? '')
@@ -135,7 +134,6 @@ export function parseRuns(json: string): Run[] {
   })
 }
 
-/** A job a workflow file declares: its key under `jobs:`, and the name GitHub shows for it. */
 export type PlannedJob = { key: string; name: string }
 
 function unquote(text: string): string {
@@ -144,9 +142,8 @@ function unquote(text: string): string {
 }
 
 /**
- * The jobs a workflow file declares, in order. Just enough YAML for the `jobs:`
- * block: each key one level in, and its `name:` if it has one. A job waiting on
- * another isn't in GitHub's job list until it starts; this is how we know it's coming.
+ * Job keys and names from a workflow file's `jobs:` block. Not a YAML parser,
+ * just enough to see jobs GitHub won't list until their `needs` finish.
  */
 export function plannedJobs(yaml: string): PlannedJob[] {
   const lines = yaml.split(/\r?\n/)
@@ -158,7 +155,7 @@ export function plannedJobs(yaml: string): PlannedJob[] {
   for (const line of lines.slice(start + 1)) {
     if (!line.trim() || line.trim().startsWith('#')) continue
     const indent = line.length - line.trimStart().length
-    if (indent === 0) break // the next top-level key: jobs are over
+    if (indent === 0) break
     if (jobIndent < 0) jobIndent = indent
     if (indent === jobIndent) {
       const key = /^\s*([\w-]+):\s*(#.*)?$/.exec(line)?.[1]
@@ -175,30 +172,19 @@ export function plannedJobs(yaml: string): PlannedJob[] {
   return jobs
 }
 
-/** Does a job GitHub listed come from this planned one? Matrix and reusable-workflow jobs carry suffixes. */
+// Matrix jobs get " (...)" appended, reusable workflows " / ...".
 function isFrom(job: Job, planned: PlannedJob): boolean {
   const name = planned.name.split('${{')[0]!.trim()
   if (!name) return job.name.startsWith(planned.key)
   return job.name === name || job.name.startsWith(`${name} (`) || job.name.startsWith(`${name} / `) || (planned.name.includes('${{') && job.name.startsWith(name))
 }
 
-/** GitHub's jobs, plus the planned ones it hasn't started yet, waiting, while the run is still going. */
 export function withWaitingJobs(jobs: readonly Job[], planned: readonly PlannedJob[], isRunGoing: boolean): Job[] {
   if (!isRunGoing) return [...jobs]
   const waiting = planned
     .filter(p => !jobs.some(job => isFrom(job, p)))
     .map((p): Job => ({ name: p.name.split('${{')[0]!.trim() || p.key, state: 'pending', isWaiting: true }))
   return [...jobs, ...waiting]
-}
-
-/**
- * The row an arrow lands on: the next or previous of `rows` from `current`, or
- * undefined past either end (and ↑ from outside the list), where the board scrolls instead.
- */
-export function nextRow(rows: readonly string[], current: string | undefined, by: number): string | undefined {
-  const at = current === undefined ? -1 : rows.indexOf(current)
-  if (at === -1) return by > 0 ? rows[0] : undefined
-  return rows[at + Math.sign(by)]
 }
 
 export function parseJobs(json: string): Job[] {
@@ -229,7 +215,6 @@ export function isReleaseCreate(command: string): boolean {
 
 const VALUE_FLAGS = new Set(['-r', '--ref', '-f', '--raw-field', '-F', '--field', '-R', '--repo'])
 
-/** The workflow named in `gh workflow run <wf>`, if that's what ran. */
 export function workflowRun(command: string): string | undefined {
   const m = /\bgh\s+workflow\s+run\s+(.*)$/.exec(command.split(/&&|;|\|/)[0] ?? '')
   const tokens = (m?.[1] ?? '').match(/"[^"]*"|'[^']*'|\S+/g) ?? []
@@ -254,7 +239,6 @@ export function tally(items: readonly { state: CheckState }[]): Tally {
   return t
 }
 
-/** The verdict of a group: any failure fails, any pending pends, else pass. */
 export function overall(items: readonly { state: CheckState }[]): CheckState {
   const t = tally(items)
   if (t.fail > 0) return 'fail'
@@ -273,10 +257,8 @@ export function prState(pr: Pr): CheckState | 'merged' | 'closed' {
   return pr.checks.length === 0 ? 'pending' : overall(pr.checks)
 }
 
-/**
- * Still moving: something has yet to finish. Not the same as the verdict being
- * 'pending' — one failure decides the verdict while the rest keep running.
- */
+// Not the same as overall() === 'pending': one failure decides the verdict
+// while other checks keep running.
 export function isRunning(items: readonly { state: CheckState }[]): boolean {
   return items.some(item => item.state === 'pending')
 }
@@ -297,21 +279,14 @@ export function isLive(prs: readonly Pr[], releases: readonly Release[]): boolea
 
 export type Shown = CheckState | 'merged' | 'closed'
 
-/** Braille dots chasing round a cell, for anything in flight. */
 export const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] as const
 
-/**
- * One cell filling, a dot at a time: the left column bottom-up, then the
- * right, from the empty track (⣀) to full (⣿).
- */
+// A cell filling one dot at a time, left column then right.
 export const FILL = ['⣀', '⣄', '⣆', '⣇', '⣧', '⣷', '⣿'] as const
 const STEPS_PER_CELL = FILL.length - 1
-/** How often the board animates: the loader moves one dot a frame. */
 export const FRAME_MS = 50
-/** Frames per spinner step: keeps the spinner at its usual 100ms. */
-export const SPINNER_EVERY = 2
-/** Frames the bar holds full before it empties and starts again: ~0.4s. */
-export const HOLD_FRAMES = 8
+export const SPINNER_EVERY = 2 // 100ms per spinner step
+export const HOLD_FRAMES = 8 // pause at full before the loader restarts
 
 function at<T>(list: readonly T[], n: number): T {
   return list[((n % list.length) + list.length) % list.length] as T
@@ -334,7 +309,6 @@ export function glyph(state: Shown, frame = 0): string {
   }
 }
 
-/** Color carries state and nothing else. */
 export function tone(state: Shown): string {
   switch (state) {
     case 'pass':
@@ -388,10 +362,8 @@ export type Segment = { state: CheckState; width: number }
 
 const BAR_ORDER: readonly CheckState[] = ['pass', 'fail', 'pending', 'skip']
 
-/**
- * A bar `width` cells wide split by state, largest-remainder rounded so the
- * cells always add up; any state present keeps at least one cell.
- */
+// Largest-remainder rounding so the widths add up; every state present gets
+// at least one cell.
 export function segments(t: Tally, width: number): Segment[] {
   if (t.total === 0) return [{ state: 'skip', width }]
   const present = BAR_ORDER.filter(state => t[state] > 0)
@@ -409,16 +381,11 @@ export function segments(t: Tally, width: number): Segment[] {
   return present.map((state, i) => ({ state, width: (cells[i] ?? 0) + floor }))
 }
 
-/**
- * A segment drawn in braille. Finished states are solid; a running one is a
- * loader, filling one dot a frame (left column bottom-up, then the right),
- * holding, then starting over.
- */
+
 export function cells(seg: Segment, frame = 0): string {
   if (seg.state === 'pass' || seg.state === 'fail') return '⣿'.repeat(seg.width)
   if (seg.state === 'skip') return '⣀'.repeat(seg.width)
   const total = seg.width * STEPS_PER_CELL
-  // One dot a frame, every step shown: a steady ~3 cells a second at any width.
   const cycle = total + HOLD_FRAMES
   const filled = Math.min(total, ((frame % cycle) + cycle) % cycle)
   let out = ''
@@ -469,7 +436,7 @@ export function mergeLabel(pr: Pr): { text: string; state: Shown } {
   }
 }
 
-/** A release's jobs (or its runs, before their jobs are known), each with a key that survives a re-run's new attempt as a new key. */
+// Keys include the attempt, so a re-run's jobs are new invaders.
 export function releaseInvaders(release: Release): { key: string; state: CheckState }[] {
   const jobs = release.runs.flatMap(run => run.jobs.map(job => ({ key: `${run.id}:${run.attempt ?? 1}:${job.name}`, state: job.state })))
   return jobs.length > 0 ? jobs : release.runs.map(run => ({ key: `${run.id}:${run.attempt ?? 1}`, state: run.state }))
@@ -480,7 +447,7 @@ export function releaseItems(release: Release): readonly { state: CheckState }[]
   return jobs.length > 0 ? jobs : release.runs
 }
 
-/** The status line: ✕ #130 5/10 · ◐ v1.4.0 4/6 */
+// ✕ #130 5/10  ·  ⠹ v1.4.0 4/6
 export function statusLine(prs: readonly Pr[], releases: readonly Release[], frame: number): string | undefined {
   const parts: string[] = []
   for (const pr of prs.slice(-2)) {
@@ -494,7 +461,7 @@ export function statusLine(prs: readonly Pr[], releases: readonly Release[], fra
   return parts.length === 0 ? undefined : parts.join('  ·  ')
 }
 
-// ── Transitions worth a toast ───────────────────────────────────────────
+// ── Toasts ──────────────────────────────────────────────────────────────
 
 export function prToast(before: Pr | undefined, after: Pr): string | undefined {
   const was = before ? prState(before) : undefined
@@ -523,7 +490,7 @@ export function releaseToast(before: Release | undefined, after: Release): strin
   return undefined
 }
 
-// ── Setup: gh installed and logged in ───────────────────────────────────
+// ── Setup ───────────────────────────────────────────────────────────────
 
 export const GH_DOWNLOAD = 'https://cli.github.com'
 
@@ -534,11 +501,10 @@ export function installCommand(os: Setup['os']): string | undefined {
     case 'windows':
       return 'winget install --id GitHub.cli'
     default:
-      return undefined // Linux has a package per distro: the download page says which
+      return undefined // varies by distro; the download page covers it
   }
 }
 
-/** What to tell the person, or nothing once gh is ready (or not yet checked). */
 export function setupAdvice(setup: Setup): { title: string; steps: string[] } | undefined {
   if (setup.gh === 'missing') {
     const install = installCommand(setup.os)
@@ -564,9 +530,8 @@ export function setupText(setup: Setup): string | undefined {
   return advice && `${advice.title}.\n${advice.steps.map(step => `  ${step}`).join('\n')}`
 }
 
-// ── Check URLs, logs and the fix-it prompt ──────────────────────────────
+// ── Logs and the fix prompt ─────────────────────────────────────────────
 
-/** The Actions run and job a check links to; undefined for status contexts and other CI. */
 export function parseActionsUrl(url?: string): { runId: string; jobId?: string } | undefined {
   const m = /\/actions\/runs\/(\d+)(?:\/job\/(\d+))?/.exec(url ?? '')
   return m?.[1] ? { runId: m[1], jobId: m[2] } : undefined
@@ -575,10 +540,7 @@ export function parseActionsUrl(url?: string): { runId: string; jobId?: string }
 const ANSI = /\x1b\[[0-9;]*[A-Za-z]/g
 const STAMP = /^\d{4}-\d\d-\d\dT[\d:.]+Z ?/
 
-/**
- * `gh run view --log-failed` lines are `job<TAB>step<TAB>timestamp text`: keep
- * the text, drop colour codes and the runner's group markers, keep the tail.
- */
+// `gh run view --log-failed` lines look like `job<TAB>step<TAB>timestamp text`.
 export function cleanLog(raw: string, keep = 80): string[] {
   const lines: string[] = []
   for (const line of raw.split('\n')) {
@@ -594,7 +556,6 @@ export function cleanLog(raw: string, keep = 80): string[] {
 
 export type Failure = { name: string; workflow?: string; url?: string; log?: string[] }
 
-/** The prompt `f` puts in the box: what failed, where, and the end of each log. */
 export function fixPrompt(pr: Pr, failures: readonly Failure[]): string {
   const parts = [
     `CI is failing on PR #${pr.number} "${pr.title}" (${pr.repo}, branch \`${pr.branch}\`).`,
@@ -613,7 +574,7 @@ export function fixPrompt(pr: Pr, failures: readonly Failure[]): string {
   return parts.join('\n')
 }
 
-// ── Transitions: what just happened, for toasts, sounds and celebrations ─
+// ── Transitions ─────────────────────────────────────────────────────────
 
 export type Transition = 'green' | 'failed' | 'merged' | 'closed' | 'released' | 'scrubbed'
 
@@ -661,7 +622,6 @@ export const DEFAULT_SETTINGS: Settings = {
   speech: false,
 }
 
-/** The manifest's userConfig values as register() receives them, defaults for anything missing. */
 export function readSettings(options: Readonly<Record<string, unknown>> | undefined): Settings {
   const out = { ...DEFAULT_SETTINGS }
   for (const key of Object.keys(out) as (keyof Settings)[]) {
@@ -691,11 +651,10 @@ export function reviewPrompt(request: { url: string; number: number; title: stri
   return `Review PR #${request.number} "${request.title}" (${request.url}). Use gh to read the diff and any discussion, then give me a concise review: real problems first, then suggestions.`
 }
 
-// ── What Claude is told about your CI ───────────────────────────────────
+// ── Prompt context ──────────────────────────────────────────────────────
 
 const CONTEXT_LIMIT = 600
 
-/** One line per tracked item, for the model: what is failing, what is running. */
 export function ciContext(prs: readonly Pr[], releases: readonly Release[]): string | undefined {
   const lines: string[] = []
   for (const pr of [...prs].reverse()) {
@@ -725,7 +684,7 @@ export function ciContext(prs: readonly Pr[], releases: readonly Release[]): str
 
 const REVIEW_STATES = new Set(['APPROVED', 'CHANGES_REQUESTED', 'COMMENTED', 'DISMISSED'])
 
-/** Latest review per person, then anyone still asked, each once. Teams are left out. */
+// Latest review per person, then pending requests. Team requests are skipped.
 export function parseReviewers(latest: unknown, requested: unknown): Reviewer[] | undefined {
   if (!Array.isArray(latest) && !Array.isArray(requested)) return undefined
   const out: Reviewer[] = []
@@ -758,7 +717,6 @@ export function reviewerGlyph(state: Reviewer['state']): { glyph: string; color:
   }
 }
 
-/** A GitHub login safe to put in an avatar URL. */
 export function isPlainLogin(login: string): boolean {
   return /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(login)
 }
@@ -770,7 +728,7 @@ export function parseHistory(json: string): CheckState[] {
   return list.map(raw => checkState(raw.status, raw.conclusion))
 }
 
-/** Flaky: passes and fails interleave (three or more flips between them). */
+// Three or more pass/fail flips.
 export function isFlaky(results: readonly CheckState[]): boolean {
   const decided = results.filter(r => r === 'pass' || r === 'fail')
   let flips = 0
@@ -778,7 +736,7 @@ export function isFlaky(results: readonly CheckState[]): boolean {
   return flips >= 3
 }
 
-// ── Saying it out loud ──────────────────────────────────────────────────
+// ── Speech and sounds ───────────────────────────────────────────────────
 
 export function spoken(label: string, happened: Transition): string {
   switch (happened) {
@@ -806,3 +764,11 @@ export const SOUND_FOR: Record<Transition, string | undefined> = {
   scrubbed: 'assets/sounds/failed.wav',
 }
 
+// ── Board ───────────────────────────────────────────────────────────────
+
+// undefined past either end, so the board scrolls instead.
+export function nextRow(rows: readonly string[], current: string | undefined, by: number): string | undefined {
+  const at = current === undefined ? -1 : rows.indexOf(current)
+  if (at === -1) return by > 0 ? rows[0] : undefined
+  return rows[at + Math.sign(by)]
+}
