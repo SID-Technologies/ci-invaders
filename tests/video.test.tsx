@@ -199,8 +199,11 @@ test('confetti off shows none', { options: { confetti: false } }, async ($, on) 
 })
 
 test('release detail draws invaders', async ($, on) => {
+  const ran: string[][] = []
   on('process.run', async (_$, e) => {
     const argv = e.argv.map(String)
+    ran.push(argv)
+    if (argv[1] === 'repo') return ok(JSON.stringify({ nameWithOwner: 'acme/rocket' }))
     if (argv[1] === 'release') return ok(JSON.stringify({ tagName: 'v1.0.0', url: 'https://github.com/acme/rocket/releases/tag/v1.0.0' }))
     if (argv[1] === 'run' && argv[2] === 'list') {
       return ok(JSON.stringify([{ databaseId: 9, workflowName: 'release', displayTitle: 'v1.0.0', url: 'https://github.com/acme/rocket/actions/runs/9', status: 'IN_PROGRESS', conclusion: '', headBranch: 'v1.0.0' }]))
@@ -213,6 +216,9 @@ test('release detail draws invaders', async ($, on) => {
   expect(await ui.find({ type: 'Raster', key: 'invaders' })).toBeDefined()
   expect(await ui.find({ type: 'Button', key: 'section:actions', text: /^ACTIONS · 1/ })).toBeDefined() // listed under Actions, not Pull requests
   expect(await ui.find({ type: 'Button', key: 'section:prs', text: /^PULL REQUESTS$/ })).toBeDefined()
+  // The release remembers its repo, so it can be followed from any directory.
+  expect(ran.some(argv => argv[1] === 'run' && argv[2] === 'list' && argv.join(' ').includes('-R acme/rocket'))).toBe(true)
+  expect(await ui.find({ type: 'Text', text: 'rocket' })).toBeDefined()
   await ui.unmount()
 })
 

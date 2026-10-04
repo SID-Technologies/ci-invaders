@@ -95,7 +95,7 @@ test('failing log shows in the detail; y copies it, e reruns', async ($, on) => 
   await $.command.run({ command: 'pulse-pr', args: PR_URL } as never)
   const ui = await $.ui.mount(pane)
   await ui.press({ key: `item:pr:${PR_URL}` }) // selecting fetches the log
-  expect(ran.some(argv => argv.join(' ') === 'gh run view --job 2 --log-failed')).toBe(true)
+  expect(ran.some(argv => argv.join(' ') === 'gh run view --job 2 --log-failed -R acme/rocket')).toBe(true)
   expect(await ui.find({ type: 'Text', text: /LOG · ci \/ test/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: 'expected 1, got 2' })).toBeDefined()
 
@@ -103,7 +103,7 @@ test('failing log shows in the detail; y copies it, e reruns', async ($, on) => 
   expect(copied).toEqual(['expected 1, got 2'])
 
   await ui.press({ key: 'rerun' })
-  expect(ran.some(argv => argv.join(' ') === 'gh run rerun 77 --failed')).toBe(true)
+  expect(ran.some(argv => argv.join(' ') === 'gh run rerun 77 --failed -R acme/rocket')).toBe(true)
   await ui.unmount()
 })
 

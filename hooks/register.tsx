@@ -171,18 +171,18 @@ async function fetchPr($: $, ref: string): Promise<Pr> {
 // By run id. A run's workflow file is fixed at its commit, so this never goes stale.
 const plans = new Map<number, PlannedJob[]>()
 
-async function planFor($: $, run: Run): Promise<PlannedJob[]> {
+async function planFor($: $, run: Run, repo = '{owner}/{repo}'): Promise<PlannedJob[]> {
   const known = plans.get(run.id)
   if (known) return known
   let planned: PlannedJob[] = []
   try {
     const [path = '', sha = ''] = (
-      await gh($, ['api', `repos/{owner}/{repo}/actions/runs/${run.id}`, '--jq', '.path + "\n" + .head_sha'])
+      await gh($, ['api', `repos/${repo}/actions/runs/${run.id}`, '--jq', '.path + "\n" + .head_sha'])
     ).trim().split('\n')
     const file = path.split('@')[0] ?? ''
     if (file.startsWith('.github/workflows/') && sha) {
       planned = plannedJobs(
-        await gh($, ['api', '-H', 'Accept: application/vnd.github.raw', `repos/{owner}/{repo}/contents/${file}?ref=${sha}`]),
+        await gh($, ['api', '-H', 'Accept: application/vnd.github.raw', `repos/${repo}/contents/${file}?ref=${sha}`]),
       )
     }
   } catch {
@@ -192,30 +192,30 @@ async function planFor($: $, run: Run): Promise<PlannedJob[]> {
   return planned
 }
 
-async function withJobs($: $, run: Run, previous?: Run): Promise<Run> {
+async function withJobs($: $, run: Run, previous: Run | undefined, repo: string | undefined): Promise<Run> {
   // Finished and not re-run since: the jobs can't have changed.
   const isSameFinish = previous?.state !== 'pending' && previous?.attempt === run.attempt
   if (run.state !== 'pending' && previous && isSameFinish && previous.jobs.length > 0) {
     return { ...run, jobs: previous.jobs }
   }
   try {
-    const jobs = parseJobs(await gh($, ['run', 'view', String(run.id), '--json', 'jobs']))
+    const jobs = parseJobs(await gh($, ['run', 'view', String(run.id), '--json', 'jobs', ...inRepo(repo)]))
     // GitHub only lists a job once it starts; add the ones still waiting on `needs`.
-    return { ...run, jobs: withWaitingJobs(jobs, run.state === 'pending' ? await planFor($, run) : [], run.state === 'pending') }
+    return { ...run, jobs: withWaitingJobs(jobs, run.state === 'pending' ? await planFor($, run, repo) : [], run.state === 'pending') }
   } catch {
     return { ...run, jobs: previous?.jobs ?? [] }
   }
 }
 
 async function fetchRelease($: $, release: Release): Promise<Release> {
-  const args = ['run', 'list', '--json', RUN_FIELDS]
+  const args = ['run', 'list', '--json', RUN_FIELDS, ...inRepo(release.repo)]
   if (release.workflow) args.push('--workflow', release.workflow, '--limit', '1')
   else if (release.tag) args.push('--branch', release.tag, '--limit', '10')
   else args.push('--limit', '1')
 
   const found = parseRuns(await gh($, args))
   const runs = await Promise.all(
-    found.map(run => withJobs($, run, release.runs.find(old => old.id === run.id))),
+    found.map(run => withJobs($, run, release.runs.find(old => old.id === run.id), release.repo)),
   )
   return { ...release, runs, error: undefined }
 }
@@ -223,14 +223,30 @@ async function fetchRelease($: $, release: Release): Promise<Release> {
 // A tag, a workflow file, or (empty) the latest release.
 async function resolveRelease($: $, arg: string): Promise<Release> {
   const trimmed = arg.trim()
+  const repo = await currentRepo($)
   if (/\.ya?ml$/.test(trimmed)) {
-    return { key: `wf:${trimmed}`, label: trimmed.replace(/\.ya?ml$/, ''), workflow: trimmed, runs: [] }
+    return { key: `wf:${repo}:${trimmed}`, label: trimmed.replace(/\.ya?ml$/, ''), repo, workflow: trimmed, runs: [] }
   }
   const args = ['release', 'view', '--json', 'tagName,url']
   if (trimmed) args.splice(2, 0, trimmed)
   const raw = JSON.parse(await gh($, args)) as { tagName?: string; url?: string }
   const tag = raw.tagName ?? trimmed
-  return { key: `tag:${tag}`, label: tag, tag, url: raw.url, runs: [] }
+  return { key: `tag:${repo}:${tag}`, label: tag, repo, tag, url: raw.url, runs: [] }
+}
+
+// Releases and runs are looked up by repo; one tracked elsewhere must say which.
+function inRepo(repo: string | undefined): string[] {
+  return repo ? ['-R', repo] : []
+}
+
+async function currentRepo($: $): Promise<string | undefined> {
+  const known = (await read($, openPrs)).repo
+  if (known) return known
+  try {
+    return (JSON.parse(await gh($, ['repo', 'view', '--json', 'nameWithOwner'])) as { nameWithOwner?: string }).nameWithOwner
+  } catch {
+    return undefined
+  }
 }
 
 // ── Setup ───────────────────────────────────────────────────────────────
@@ -333,10 +349,10 @@ function isCelebrating(party: Celebration | null, now: number): party is Celebra
 
 // ── Fix it ──────────────────────────────────────────────────────────────
 
-async function fetchFailedLog($: $, jobId: string): Promise<string[]> {
+async function fetchFailedLog($: $, jobId: string, repo: string | undefined): Promise<string[]> {
   const cached = (await read($, logs))[jobId]
   if (cached) return cached.lines
-  const lines = cleanLog(await gh($, ['run', 'view', '--job', jobId, '--log-failed']))
+  const lines = cleanLog(await gh($, ['run', 'view', '--job', jobId, '--log-failed', ...inRepo(repo)]))
   await update($, logs, all => ({ ...all, [jobId]: { lines, at: Date.now() } }))
   return lines
 }
@@ -355,7 +371,7 @@ async function fixIt($: $, key: string, surface: string): Promise<void> {
       let log: string[] | undefined
       if (jobId) {
         try {
-          log = await fetchFailedLog($, jobId)
+          log = await fetchFailedLog($, jobId, pr.repo)
         } catch {
           log = undefined
         }
@@ -610,8 +626,8 @@ async function openInBrowser($: $, key: string): Promise<void> {
       return
     }
     const release = (await read($, releases)).find(one => releaseKey(one) === key)
-    if (release?.tag && release.url) await gh($, ['release', 'view', release.tag, '--web'])
-    else if (release?.runs[0]) await gh($, ['run', 'view', String(release.runs[0].id), '--web'])
+    if (release?.tag && release.url) await gh($, ['release', 'view', release.tag, '--web', ...inRepo(release.repo)])
+    else if (release?.runs[0]) await gh($, ['run', 'view', String(release.runs[0].id), '--web', ...inRepo(release.repo)])
   } catch (error) {
     $.ui.toast(`Couldn't open it: ${message(error)}`)
   }
@@ -677,7 +693,14 @@ async function restoreTracking($: $): Promise<void> {
       // Deleted or no longer reachable.
     }
   }
-  for (const release of stored.releases ?? []) await trackRelease($, { ...release, runs: [] })
+  for (const release of stored.releases ?? []) {
+    const restored = await trackRelease($, { ...release, runs: [] })
+    // Saved before releases recorded their repo, and not in this one: there's no way to find it.
+    if (restored.error && !release.repo) {
+      await update($, releases, list => list.filter(r => r.key !== release.key))
+      await persistTracking($)
+    }
+  }
   await refreshStatus($)
 }
 
@@ -697,7 +720,7 @@ async function prefetchLog($: $): Promise<void> {
   const check = shownFailure(pr, await read($, logCheck))
   const jobId = parseActionsUrl(check?.url)?.jobId
   await Promise.all([
-    jobId ? fetchFailedLog($, jobId).catch(() => undefined) : undefined,
+    jobId ? fetchFailedLog($, jobId, pr.repo).catch(() => undefined) : undefined,
     settings.heatmap ? fetchHistory($, pr) : undefined,
     settings.avatars ? fetchAvatars($, pr) : undefined,
   ])
@@ -781,7 +804,7 @@ async function rerunFailed($: $, key: string): Promise<void> {
   let started = 0
   for (const id of runIds) {
     try {
-      await gh($, ['run', 'rerun', id, '--failed'])
+      await gh($, ['run', 'rerun', id, '--failed', ...inRepo(pr?.repo ?? release?.repo)])
       started += 1
     } catch (error) {
       $.ui.toast(`Couldn't rerun run ${id}: ${message(error)}`)
@@ -1193,7 +1216,7 @@ export const register: Register = (on, options) => {
     ]
     const chosen = await read($, selected)
     const openKey = items.some(item => item.key === chosen) ? chosen : (items[0]?.key ?? '')
-    const labelWidth = Math.max(4, ...items.map(item => item.label.length), ...mine.prs.map(pr => `#${pr.number}`.length))
+    const labelWidth = Math.min(14, Math.max(4, ...items.map(item => item.label.length), ...mine.prs.map(pr => `#${pr.number}`.length)))
 
     const drawPr = (pr: Pr) => {
       const t = tally(pr.checks)
@@ -1413,6 +1436,15 @@ export const register: Register = (on, options) => {
     const isTall = (props.scroll?.bodyRows ?? 40) >= 32
     boardShape = { prRows: isTall ? 4 : 3, sideRows: isTall ? 3 : 2, isSideBySide: inner >= 100 }
     const shortRepo = (repo: string) => repo.split('/')[1] ?? repo
+    // Every list shares one set of column widths so the columns line up across them.
+    const allRepos = [
+      ...prList.map(pr => pr.repo),
+      ...releaseList.map(r => r.repo ?? ''),
+      ...(mine.prs.length > 0 ? [mine.repo] : []),
+    ].map(shortRepo)
+    const repoWidth = Math.min(14, Math.max(0, ...allRepos.map(repo => repo.length)))
+    const counts = [...items.map(item => item.t), ...mine.prs.map(pr => tally(pr.checks))].map(t => `${t.pass}/${t.total}`.length)
+    const countWidth = Math.max(3, ...counts)
 
     const ListRow = ({ key, marker, state, repo, repoWidth, label, title, t, isOpen, buttonKey, onPress }: {
       key: string
@@ -1449,7 +1481,7 @@ export const register: Register = (on, options) => {
         </Box>
         {t && Bar({ t, width: 6 })}
         {t && (
-          <Box width={5} flexShrink={0} justifyContent="flex-end">
+          <Box width={countWidth} flexShrink={0} justifyContent="flex-end">
             <Text dimColor>
               {t.pass}/{t.total}
             </Text>
@@ -1500,7 +1532,7 @@ export const register: Register = (on, options) => {
     // A fixed-height list: heading, `size` lines scrolled to keep the cursor in
     // view, and a line saying what's above and below.
     type Line = { key: string; draw: () => RenderChildren }
-    const ListBlock = ({ id, label, lines, size, empty }: { id: Section; label: string; lines: Line[]; size: number; empty: string }) => {
+    const ListBlock = ({ id, label, lines, size, empty, width }: { id: Section; label: string; lines: Line[]; size: number; empty: string; width?: number }) => {
       const at = lines.findIndex(line => line.key !== '' && line.key === focusIn(id))
       const first = scrollWindow(windowStarts.get(id) ?? 0, at, lines.length, size)
       windowStarts.set(id, first)
@@ -1510,7 +1542,7 @@ export const register: Register = (on, options) => {
       const below = lines.slice(first + size).filter(line => line.key).length
       const more = [above > 0 && `↑ ${above} above`, below > 0 && `↓ ${below} below`].filter(Boolean).join(' · ')
       return (
-        <Box key={`list-${id}`} flexDirection="column" height={size + 2} flexGrow={1} flexShrink={1} minWidth={0}>
+        <Box key={`list-${id}`} flexDirection="column" height={size + 2} minWidth={0} {...(width ? { width, flexShrink: 0 } : { flexGrow: 1 })}>
           {Heading({ id, label })}
           <Box flexDirection="column" height={size}>
             {visible.length > 0 ? visible.map(line => line.draw()) : <Text dimColor wrap="truncate-end">{empty}</Text>}
@@ -1522,15 +1554,14 @@ export const register: Register = (on, options) => {
       )
     }
 
-    const trackedWidth = Math.min(14, Math.max(0, ...prItems.map(item => ('pr' in item ? shortRepo(item.pr.repo).length : 0))))
     const trackedLine = (item: (typeof items)[number]): Line => ({
       key: `${ITEM}${item.key}`,
       draw: () =>
         ListRow({
           key: `row-${item.key}`,
           state: item.state,
-          repo: 'pr' in item ? shortRepo(item.pr.repo) : '',
-          repoWidth: 'pr' in item ? trackedWidth : 0,
+          repo: shortRepo('pr' in item ? item.pr.repo : (item.release.repo ?? '')),
+          repoWidth,
           label: item.label,
           title: item.title,
           t: item.t,
@@ -1549,7 +1580,7 @@ export const register: Register = (on, options) => {
           key: `mine-${pr.url}`,
           state: pr.checks.length === 0 ? 'skip' : overall(pr.checks),
           repo: mineRepo,
-          repoWidth: Math.min(14, mineRepo.length),
+          repoWidth,
           label: `#${pr.number}`,
           title: pr.isDraft ? `${pr.title} (draft)` : pr.title,
           t: tally(pr.checks),
@@ -1570,6 +1601,8 @@ export const register: Register = (on, options) => {
     const removable = isTrackedRow ? cursorKey.slice(ITEM.length) : openKey
     const finishedCount = [...prList, ...releaseList].filter(isFinished).length
 
+    // Side by side, each list gets exactly half, or the busier one crowds the other out.
+    const halfWidth = boardShape.isSideBySide ? Math.floor((inner - 3) / 2) : undefined
     const prBlock = ListBlock({
       id: 'prs',
       label: 'PULL REQUESTS',
@@ -1582,6 +1615,7 @@ export const register: Register = (on, options) => {
       label: 'ACTIONS',
       lines: actionItems.map(trackedLine),
       size: boardShape.sideRows,
+      width: halfWidth,
       empty: 'None tracked. /pulse-release, or a release Claude creates.',
     })
     const mineBlock = ListBlock({
@@ -1589,6 +1623,7 @@ export const register: Register = (on, options) => {
       label: 'YOUR OPEN PRS',
       lines: mineLines,
       size: boardShape.sideRows,
+      width: halfWidth,
       empty: mine.error ?? (mine.prs.length > 0 ? 'All tracked.' : 'None open.'),
     })
 

@@ -53,6 +53,7 @@ export type Run = {
 export type Release = {
   key: string
   label: string
+  repo?: string // owner/name; older saved releases lack it and use the current repo
   workflow?: string
   tag?: string
   url?: string
