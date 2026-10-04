@@ -1,4 +1,4 @@
-import type { Check, CheckState, Job, OpenPr, Pr, Release, ReviewRequest, Reviewer, Run, Setup } from '../types'
+import type { Check, CheckState, Job, OpenPr, Pr, Release, Reviewer, Run, Setup } from '../types'
 
 // ── gh JSON → our shapes ────────────────────────────────────────────────
 
@@ -87,6 +87,7 @@ export function parsePr(json: string): Pr {
     mergeable: String(raw.mergeable ?? 'UNKNOWN'),
     checks: parseChecks(raw.statusCheckRollup),
     base: raw.baseRefName ? String(raw.baseRefName) : undefined,
+    author: (raw.author as { login?: string } | undefined)?.login,
     endedAt: raw.mergedAt ? String(raw.mergedAt) : raw.closedAt ? String(raw.closedAt) : undefined,
     reviews: parseReviewers(raw.latestReviews, raw.reviewRequests),
   }
@@ -633,21 +634,7 @@ export function readSettings(options: Readonly<Record<string, unknown>> | undefi
   return out
 }
 
-// ── Review requests ─────────────────────────────────────────────────────
-
-export function parseReviewRequests(json: string): ReviewRequest[] {
-  const list = JSON.parse(json) as Record<string, unknown>[]
-  return list.map(raw => {
-    const repo = raw.repository as { nameWithOwner?: string; name?: string } | undefined
-    const url = String(raw.url ?? '')
-    return {
-      url,
-      number: Number(raw.number ?? 0),
-      title: String(raw.title ?? ''),
-      repo: repo?.nameWithOwner ?? repoOf(url),
-    }
-  })
-}
+// ── Review prompt ───────────────────────────────────────────────────────
 
 export function reviewPrompt(request: { url: string; number: number; title: string }): string {
   return `Review PR #${request.number} "${request.title}" (${request.url}). Use gh to read the diff and any discussion, then give me a concise review: real problems first, then suggestions.`

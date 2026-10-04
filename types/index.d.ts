@@ -20,6 +20,7 @@ export type Pr = {
   mergeable: string
   checks: Check[]
   base?: string
+  author?: string
   endedAt?: string // when it merged or closed
   reviews?: Reviewer[]
   error?: string
@@ -69,10 +70,6 @@ export type OpenPr = {
 
 export type OpenPrs = { repo: string; prs: OpenPr[]; error?: string }
 
-export type ReviewRequest = { url: string; number: number; title: string; repo: string }
-
-export type ReviewRequests = { prs: ReviewRequest[]; error?: string }
-
 export type GhState = 'unknown' | 'ready' | 'missing' | 'signed-out'
 
 export type Setup = { gh: GhState; os: 'mac' | 'linux' | 'windows' | 'unknown' }
@@ -102,7 +99,7 @@ declare module 'claude-code' {
       busy: string // label shown while an action runs, '' when idle
       isKeysShown: boolean
       logs: Logs
-      reviewRequests: ReviewRequests
+      viewer: string // your GitHub login, '' until known
       logCheck: string // `<item key>#<check url>`
       history: Record<string, History> // by `<repo>|<branch>|<workflow>`
       avatars: Record<string, string> // login -> base64 PNG, '' if unavailable

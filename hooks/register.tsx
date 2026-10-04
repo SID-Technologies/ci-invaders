@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren, Timer } from 'claude-code'
 
-import type { Celebration, History, Logs, OpenPrs, Pr, Release, ReviewRequests, Run, Setup, Undo } from '../types'
+import type { Celebration, History, Logs, OpenPrs, Pr, Release, Run, Setup, Undo } from '../types'
 import {
   FRAME_MS,
   PR_URL,
@@ -32,7 +32,6 @@ import {
   parseJobs,
   parseOpenPrs,
   parsePr,
-  parseReviewRequests,
   parseRuns,
   plannedJobs,
   prState,
@@ -101,14 +100,13 @@ const WORKFLOW_COLUMN = 16
 const TIME_COLUMN = 8
 
 const PR_FIELDS =
-  'number,title,url,state,isDraft,reviewDecision,mergeable,statusCheckRollup,headRefName,baseRefName,latestReviews,reviewRequests,mergedAt,closedAt'
+  'number,title,url,state,isDraft,reviewDecision,mergeable,statusCheckRollup,headRefName,baseRefName,latestReviews,reviewRequests,mergedAt,closedAt,author'
 const OPEN_PR_FIELDS = 'number,title,url,isDraft,statusCheckRollup'
 const RUN_FIELDS = 'databaseId,name,workflowName,displayTitle,url,status,conclusion,headBranch,startedAt,updatedAt,attempt'
 
-// Board elements are keyed by prefix: tracked rows, your PRs, review requests, section headings.
+// Board elements are keyed by prefix: tracked rows, your PRs, section headings.
 const ITEM = 'item:'
 const ADD = 'add:'
-const REVIEW = 'review:'
 const SECTION = 'section:'
 
 const prKey = (pr: Pr) => `pr:${pr.url}`
@@ -137,7 +135,7 @@ const cursor = atom({ plugin: 'gh-pulse', key: 'cursor' } as const, '')
 const busy = atom({ plugin: 'gh-pulse', key: 'busy' } as const, '')
 const isKeysShown = atom({ plugin: 'gh-pulse', key: 'isKeysShown' } as const, false)
 const logs = atom({ plugin: 'gh-pulse', key: 'logs' } as const, {} as Logs)
-const reviewRequests = atom({ plugin: 'gh-pulse', key: 'reviewRequests' } as const, { prs: [] } as ReviewRequests)
+const viewer = atom({ plugin: 'gh-pulse', key: 'viewer' } as const, '')
 const logCheck = atom({ plugin: 'gh-pulse', key: 'logCheck' } as const, '')
 const history = atom({ plugin: 'gh-pulse', key: 'history' } as const, {} as Record<string, History>)
 const avatars = atom({ plugin: 'gh-pulse', key: 'avatars' } as const, {} as Record<string, string>)
@@ -410,19 +408,19 @@ async function refreshOpenPrs($: $): Promise<void> {
   }
 }
 
-async function refreshReviewRequests($: $): Promise<void> {
+// Your login, so `a` (review with Claude) only shows on PRs you didn't open.
+async function learnViewer($: $): Promise<void> {
+  if (await read($, viewer)) return
   try {
-    const list = parseReviewRequests(
-      await gh($, ['search', 'prs', '--review-requested=@me', '--state=open', '--limit', '15', '--json', 'number,title,url,repository']),
-    )
-    await update($, reviewRequests, () => ({ prs: list }))
-  } catch (error) {
-    await update($, reviewRequests, old => ({ ...old, error: message(error) }))
+    const login = (await gh($, ['api', 'user', '--jq', '.login'])).trim()
+    if (login) await update($, viewer, () => login)
+  } catch {
+    // Without it, `a` stays hidden.
   }
 }
 
 async function refreshLists($: $): Promise<void> {
-  await Promise.all([refreshOpenPrs($), refreshReviewRequests($)])
+  await Promise.all([refreshOpenPrs($), learnViewer($)])
 }
 
 let isPolling = false
@@ -474,8 +472,8 @@ let sectionRows: Record<string, readonly string[]> = {}
 const lastInSection = new Map<string, string>()
 const windowStarts = new Map<string, number>()
 let drawnRows = new Set<string>() // rows inside their list's window
-// Rows each list shows, and whether your PRs and review requests sit side by side.
-let boardShape = { trackRows: 5, sideRows: 3, isSideBySide: true }
+// Rows each list shows, and whether Actions and your PRs sit side by side.
+let boardShape = { prRows: 4, sideRows: 3, isSideBySide: true }
 
 // Where a focusable sits top to bottom: action buttons first, then headings and rows.
 function orderOf(key: string): number {
@@ -489,13 +487,13 @@ function orderOf(key: string): number {
 
 const KEYS: readonly (readonly [string, string])[] = [
   ['↑ ↓', 'move through the lists'],
-  ['1 2 3', 'jump to Tracking, Your open PRs, Waiting on your review'],
+  ['1 2 3', 'jump to Pull requests, Actions, Your open PRs'],
   ['pgup pgdn', 'scroll the board'],
   ['enter', 'pin a row in the detail, or track one of yours'],
   ['f', 'fix it: the failing logs into the prompt'],
   ['e', 'rerun the failed jobs'],
   ['l  y', 'next failing log · copy the log shown'],
-  ['a', 'review with Claude'],
+  ['a', 'review with Claude (a PR you didn\'t open)'],
   ['o', 'open on GitHub'],
   ['x  d', 'remove the highlighted row · clear finished'],
   ['c  z', 'clear everything · undo any removal'],
@@ -583,9 +581,9 @@ async function clearAll($: $): Promise<void> {
 
 // Each list is a heading, its rows and a scroll line; one row of gap between blocks.
 function listOnlyRows(): number {
-  const { trackRows, sideRows, isSideBySide } = boardShape
+  const { prRows, sideRows, isSideBySide } = boardShape
   const side = isSideBySide ? sideRows + 2 : 2 * (sideRows + 2) + 1
-  return 2 + 1 + (trackRows + 2) + 1 + side
+  return 2 + 1 + (prRows + 2) + 1 + side
 }
 
 async function openBoard($: $) {
@@ -794,11 +792,9 @@ async function rerunFailed($: $, key: string): Promise<void> {
 }
 
 async function askForReview($: $, url: string): Promise<void> {
-  const request = (await read($, reviewRequests)).prs.find(one => one.url === url)
   const pr = (await read($, prs)).find(one => one.url === url)
-  const what = request ?? (pr && { url: pr.url, number: pr.number, title: pr.title })
-  if (!what) return
-  const filled = await $.prompt.fill({ text: reviewPrompt(what) })
+  if (!pr) return
+  const filled = await $.prompt.fill({ text: reviewPrompt(pr) })
   $.ui.toast(filled.isFilled ? 'Review prompt ready: esc to the prompt, then Enter' : "Couldn't fill the prompt box")
 }
 
@@ -1084,7 +1080,7 @@ export const register: Register = (on, options) => {
     const prList = await read($, prs)
     const releaseList = await read($, releases)
     const mine = await read($, openPrs)
-    const reviews = await read($, reviewRequests)
+    const me = await read($, viewer)
     const allLogs = await read($, logs)
     const chosenLog = await read($, logCheck)
     const f = await read($, frame)
@@ -1197,7 +1193,7 @@ export const register: Register = (on, options) => {
     ]
     const chosen = await read($, selected)
     const openKey = items.some(item => item.key === chosen) ? chosen : (items[0]?.key ?? '')
-    const labelWidth = Math.max(4, ...items.map(item => item.label.length), ...mine.prs.map(pr => `#${pr.number}`.length), ...reviews.prs.map(pr => `#${pr.number}`.length))
+    const labelWidth = Math.max(4, ...items.map(item => item.label.length), ...mine.prs.map(pr => `#${pr.number}`.length))
 
     const drawPr = (pr: Pr) => {
       const t = tally(pr.checks)
@@ -1415,7 +1411,7 @@ export const register: Register = (on, options) => {
     }
 
     const isTall = (props.scroll?.bodyRows ?? 40) >= 32
-    boardShape = { trackRows: isTall ? 5 : 3, sideRows: isTall ? 3 : 2, isSideBySide: inner >= 100 }
+    boardShape = { prRows: isTall ? 4 : 3, sideRows: isTall ? 3 : 2, isSideBySide: inner >= 100 }
     const shortRepo = (repo: string) => repo.split('/')[1] ?? repo
 
     const ListRow = ({ key, marker, state, repo, repoWidth, label, title, t, isOpen, buttonKey, onPress }: {
@@ -1468,22 +1464,23 @@ export const register: Register = (on, options) => {
       await update($, selected, () => `pr:${url}`)
     }
     const untracked = mine.prs.filter(pr => !tracked.has(pr.url))
-    const toReview = reviews.prs.filter(pr => !tracked.has(pr.url))
     const prItems = items.filter(item => 'pr' in item)
     const actionItems = items.filter(item => 'release' in item)
     const isListShown = shown !== 'detail'
     const sections = {
-      tracking: isListShown ? [...prItems, ...actionItems].map(item => `${ITEM}${item.key}`) : [],
+      prs: isListShown ? prItems.map(item => `${ITEM}${item.key}`) : [],
+      actions: isListShown ? actionItems.map(item => `${ITEM}${item.key}`) : [],
       mine: isListShown ? untracked.map(pr => `${ADD}${pr.url}`) : [],
-      reviews: isListShown && !reviews.error ? toReview.map(pr => `${REVIEW}${pr.url}`) : [],
     }
-    rowKeys = [...sections.tracking, ...sections.mine, ...sections.reviews]
+    rowKeys = [...sections.prs, ...sections.actions, ...sections.mine]
     sectionRows = sections
     drawnRows = new Set()
     type Section = keyof typeof sections
-    const active: Section = (Object.keys(sections) as Section[]).find(id => sections[id].includes(cursorKey)) ?? 'tracking'
+    const ids = Object.keys(sections) as Section[]
+    const active: Section =
+      ids.find(id => sections[id].includes(cursorKey)) ?? ids.find(id => sections[id].includes(`${ITEM}${openKey}`)) ?? 'prs'
     const focusIn = (id: Section) =>
-      sections[id].includes(cursorKey) ? cursorKey : id === 'tracking' && openKey ? `${ITEM}${openKey}` : ''
+      sections[id].includes(cursorKey) ? cursorKey : sections[id].includes(`${ITEM}${openKey}`) ? `${ITEM}${openKey}` : ''
     const where = (id: Section) => {
       const keys = sections[id]
       const at = keys.indexOf(focusIn(id))
@@ -1533,7 +1530,7 @@ export const register: Register = (on, options) => {
           key: `row-${item.key}`,
           state: item.state,
           repo: 'pr' in item ? shortRepo(item.pr.repo) : '',
-          repoWidth: trackedWidth,
+          repoWidth: 'pr' in item ? trackedWidth : 0,
           label: item.label,
           title: item.title,
           t: item.t,
@@ -1543,13 +1540,6 @@ export const register: Register = (on, options) => {
           onPress: () => openItem($, item.key),
         }),
     })
-    const trackingLines: Line[] = [
-      ...prItems.map(trackedLine),
-      ...(prItems.length > 0 && actionItems.length > 0
-        ? [{ key: '', draw: () => <Text key="actions-rule" dimColor wrap="truncate">{`Actions ${'─'.repeat(200)}`}</Text> }]
-        : []),
-      ...actionItems.map(trackedLine),
-    ]
 
     const mineRepo = mine.repo ? shortRepo(mine.repo) : ''
     const mineLines: Line[] = untracked.map(pr => ({
@@ -1570,39 +1560,29 @@ export const register: Register = (on, options) => {
         }),
     }))
 
-    const reviewWidth = Math.min(14, Math.max(0, ...toReview.map(pr => shortRepo(pr.repo).length)))
-    const reviewLines: Line[] = toReview.map(pr => ({
-      key: `${REVIEW}${pr.url}`,
-      draw: () =>
-        ListRow({
-          key: `review-${pr.url}`,
-          state: 'skip',
-          repo: shortRepo(pr.repo),
-          repoWidth: reviewWidth,
-          label: `#${pr.number}`,
-          title: pr.title,
-          isOpen: false,
-          marker: '?',
-          buttonKey: `${REVIEW}${pr.url}`,
-          onPress: () => trackAndOpen(pr.url),
-        }),
-    }))
-
     const open = items.find(item => item.key === openKey)
     const detail = open ? ('pr' in open ? drawPr(open.pr) : drawRelease(open.release)) : null
     const openPr = open && 'pr' in open ? open.pr : undefined
     const failingChecks = openPr?.checks.filter(c => c.state === 'fail') ?? []
     const hasFailedRuns = open && 'release' in open && open.release.runs.some(run => run.state === 'fail')
     // x removes the highlighted tracked row, or the pinned one when the cursor is elsewhere.
-    const removable = cursorKey.startsWith(ITEM) && sections.tracking.includes(cursorKey) ? cursorKey.slice(ITEM.length) : openKey
+    const isTrackedRow = sections.prs.includes(cursorKey) || sections.actions.includes(cursorKey)
+    const removable = isTrackedRow ? cursorKey.slice(ITEM.length) : openKey
     const finishedCount = [...prList, ...releaseList].filter(isFinished).length
 
-    const trackingBlock = ListBlock({
-      id: 'tracking',
-      label: 'TRACKING',
-      lines: trackingLines,
-      size: boardShape.trackRows,
-      empty: 'Nothing yet. Pick one of your PRs below, or /pulse-pr and /pulse-release.',
+    const prBlock = ListBlock({
+      id: 'prs',
+      label: 'PULL REQUESTS',
+      lines: prItems.map(trackedLine),
+      size: boardShape.prRows,
+      empty: 'None tracked. Press enter on one of your PRs, or /pulse-pr.',
+    })
+    const actionBlock = ListBlock({
+      id: 'actions',
+      label: 'ACTIONS',
+      lines: actionItems.map(trackedLine),
+      size: boardShape.sideRows,
+      empty: 'None tracked. /pulse-release, or a release Claude creates.',
     })
     const mineBlock = ListBlock({
       id: 'mine',
@@ -1610,13 +1590,6 @@ export const register: Register = (on, options) => {
       lines: mineLines,
       size: boardShape.sideRows,
       empty: mine.error ?? (mine.prs.length > 0 ? 'All tracked.' : 'None open.'),
-    })
-    const reviewBlock = ListBlock({
-      id: 'reviews',
-      label: 'WAITING ON YOUR REVIEW',
-      lines: reviewLines,
-      size: boardShape.sideRows,
-      empty: reviews.error ?? (reviews.prs.length > 0 ? 'All tracked.' : 'None.'),
     })
 
     return (
@@ -1645,7 +1618,7 @@ export const register: Register = (on, options) => {
             {failingChecks.length > 0 && (
               <Button key="copy" plain dimColor hotkey="y" label="Copy log" onPress={() => copyLog($, openKey, e.surface)} />
             )}
-            {openPr && reviews.prs.some(one => one.url === openPr.url) && (
+            {openPr && openPr.state === 'OPEN' && me && openPr.author && openPr.author !== me && (
               <Button key="ask" plain hotkey="a" label="Review with Claude" onPress={() => askForReview($, openPr.url)} />
             )}
             {openKey && <Button key="open" plain dimColor hotkey="o" label="Open" onPress={() => openInBrowser($, openKey)} />}
@@ -1691,17 +1664,17 @@ export const register: Register = (on, options) => {
         )}
 
         {/* Lists first at fixed heights, so the open item always starts on the same row. */}
-        {isListShown && trackingBlock}
+        {isListShown && prBlock}
         {isListShown &&
           (boardShape.isSideBySide ? (
             <Box key="side-lists" gap={3}>
+              {actionBlock}
               {mineBlock}
-              {reviewBlock}
             </Box>
           ) : (
             <Box key="side-lists" flexDirection="column" gap={1}>
+              {actionBlock}
               {mineBlock}
-              {reviewBlock}
             </Box>
           ))}
 

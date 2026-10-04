@@ -1,7 +1,7 @@
 import type { RenderPropsOf } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 
-import { ciContext, clip, isFinished, isStale, nextRow, parseReviewRequests, scrollWindow } from '../hooks/lib'
+import { ciContext, clip, isFinished, isStale, nextRow, scrollWindow } from '../hooks/lib'
 import type { Pr } from '../types'
 
 const PR_URL = 'https://github.com/acme/rocket/pull/482'
@@ -18,6 +18,7 @@ const prJson = (url = PR_URL, conclusion = 'FAILURE') =>
     reviewDecision: '',
     mergeable: 'MERGEABLE',
     headRefName: 'warp-drive',
+    author: { login: url === PR_URL ? 'me' : 'someone' },
     statusCheckRollup: [
       { __typename: 'CheckRun', workflowName: 'ci', name: 'test', status: 'COMPLETED', conclusion, detailsUrl: JOB_URL },
       { __typename: 'CheckRun', workflowName: 'ci', name: 'lint', status: 'COMPLETED', conclusion: 'SUCCESS' },
@@ -34,15 +35,13 @@ const pane = {
   props: { title: 'gh-pulse', isFocused: true, bodyColumns: 90, placement: 'dock' } as unknown as RenderPropsOf['Pane'],
 } as const
 
-/** A gh that knows one failing PR, its log, your review requests, and records every call. */
+/** A gh that knows a failing PR, its log and who you are, and records every call. */
 function fakeGh(ran: string[][], conclusion = 'FAILURE') {
   return async (_$: unknown, e: { argv: readonly unknown[] }) => {
     const argv = e.argv.map(String)
     ran.push(argv)
     if (argv[1] === 'run' && argv.includes('--log-failed')) return ok('ci\ttest\t2026-10-02T10:00:01.0000000Z expected 1, got 2\n')
-    if (argv[1] === 'search') {
-      return ok(JSON.stringify([{ number: 9, title: 'fix: engine mounts', url: OTHER_URL, repository: { nameWithOwner: 'acme/engine' } }]))
-    }
+    if (argv[1] === 'api' && argv[2] === 'user') return ok('me\n')
     if (argv[1] === 'pr' && argv[2] === 'view') return ok(prJson(argv[3]?.startsWith('https') ? argv[3] : PR_URL, conclusion))
     if (argv[1] === 'pr' && argv[2] === 'list') return ok('[]')
     if (argv[1] === 'repo') return ok(JSON.stringify({ nameWithOwner: 'acme/rocket' }))
@@ -52,8 +51,6 @@ function fakeGh(ran: string[][], conclusion = 'FAILURE') {
 
 test('prompt context is sent when failing or changed, skipped otherwise', async ($, on) => {
   const pr = JSON.parse(prJson()) as Record<string, unknown>
-  expect(parseReviewRequests(JSON.stringify([{ number: 9, title: 't', url: OTHER_URL, repository: { nameWithOwner: 'acme/engine' } }])))
-    .toEqual([{ url: OTHER_URL, number: 9, title: 't', repo: 'acme/engine' }])
   expect(ciContext([], [])).toBeUndefined()
   const tracked = {
     url: PR_URL, number: 482, repo: 'acme/rocket', title: String(pr.title), branch: 'warp-drive', state: 'OPEN',
@@ -110,23 +107,21 @@ test('failing log shows in the detail; y copies it, e reruns', async ($, on) => 
   await ui.unmount()
 })
 
-test('review requests are listed, trackable, and a fills a review prompt', async ($, on) => {
-  const ran: string[][] = []
+test('a reviews with Claude only on PRs you did not open', async ($, on) => {
   const filled: string[] = []
-  on('process.run', fakeGh(ran))
+  on('process.run', fakeGh([]))
   on('ui.open', async () => ({ value: { isPlaced: true } }))
   on('prompt.fill', async (_$, e) => (filled.push(e.text), { isFilled: true }))
 
   await $.command.run({ command: 'pulse', args: '' } as never)
+  await $.command.run({ command: 'pulse-pr', args: PR_URL } as never)
   const ui = await $.ui.mount(pane)
-  await ui.press({ key: 'refresh' }) // the lists load in the background; wait for them
-  expect(await ui.find({ type: 'Button', key: 'section:reviews', text: /^WAITING ON YOUR REVIEW/ })).toBeDefined()
-  expect(await ui.find({ type: 'Button', key: `review:${OTHER_URL}` })).toBeDefined()
+  await ui.press({ key: 'refresh' }) // learns who you are
+  await ui.press({ key: `item:pr:${PR_URL}` })
+  expect(await ui.find({ type: 'Button', key: 'ask' })).toBeUndefined() // yours
 
-  await ui.press({ key: `review:${OTHER_URL}` })
-  expect(await ui.find({ type: 'Button', key: `item:pr:${OTHER_URL}` })).toBeDefined()
-  expect(await ui.find({ type: 'Button', key: `review:${OTHER_URL}` })).toBeUndefined()
-
+  await $.command.run({ command: 'pulse-pr', args: OTHER_URL } as never)
+  await ui.press({ key: `item:pr:${OTHER_URL}` })
   await ui.press({ key: 'ask' })
   expect(filled[0]).toContain(`Review PR #9 "fix: engine mounts" (${OTHER_URL})`)
   await ui.unmount()

@@ -33,17 +33,17 @@ If `gh` is missing or signed out, gh-pulse tells you what to run and starts work
 
 `/pulse` opens it with the keyboard; otherwise use **ctrl+x tab** or click it. **esc** returns to the prompt.
 
-The lists sit at the top at a fixed height and scroll, so the open item below them always starts in the same place: what you're tracking (pull requests, then Actions), your open PRs in this repo, and PRs waiting on your review.
+Three lists sit at the top at a fixed height and scroll, so the open item below them always starts in the same place: the pull requests you're tracking, the Actions runs you're tracking, and your open PRs in this repo, ready to track.
 
 | Key | Does |
 | --- | --- |
 | `↑` `↓` | Move through the lists |
-| `1` `2` `3` | Jump to a list, back to where you were in it |
-| `enter` | Pin a tracked row in the detail, or track one of your PRs or review requests |
+| `1` `2` `3` | Jump to Pull requests, Actions or Your open PRs, back to where you were |
+| `enter` | Pin a tracked row in the detail, or track one of your PRs |
 | `f` | Fix it: failing checks and logs into the prompt |
 | `e` | Rerun failed jobs |
 | `l` / `y` | Next failing log / copy the log shown |
-| `a` | Ask Claude to review a PR you were asked to review |
+| `a` | Ask Claude to review a tracked PR you didn't open |
 | `o` | Open on GitHub |
 | `x` | Remove the highlighted row |
 | `d` | Clear finished: merged or closed PRs and releases that passed |
@@ -54,7 +54,7 @@ The lists sit at the top at a fixed height and scroll, so the open item below th
 
 The pinned item stays in the detail while you move around the lists. Merged and closed PRs drop off by themselves 10 minutes after they end.
 
-Buttons only appear when they apply. gh-pulse polls every 15 seconds; your PRs and review requests every minute; CI history every 5 minutes. Finished releases are rechecked every minute so a re-run shows up.
+Buttons only appear when they apply. gh-pulse polls every 15 seconds; your open PRs every minute; CI history every 5 minutes. Finished releases are rechecked every minute so a re-run shows up.
 
 ## Commands
 

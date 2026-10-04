@@ -223,7 +223,7 @@ test('board lists tracked items and your PRs, and tracks on press', async ($, on
   await ui.press({ key: `item:pr:${PR_URL}` })
   expect(await ui.find({ type: 'Link', text: '#482' })).toBeDefined()
   expect(await ui.find({ type: 'Link', text: '#483' })).toBeUndefined()
-  expect(await ui.find({ type: 'Button', text: /^TRACKING · \d of \d$/ })).toBeDefined() // where you are in the list
+  expect(await ui.find({ type: 'Button', key: 'section:prs', text: /^PULL REQUESTS · \d of \d$/ })).toBeDefined() // where you are in the list
 
   // o opens the selected one in the browser, through gh.
   await ui.press({ key: 'open' })
@@ -240,8 +240,8 @@ test('board lists tracked items and your PRs, and tracks on press', async ($, on
   expect(await ui.find({ type: 'Link', text: '#484' })).toBeUndefined()
   expect(await ui.find({ type: 'Button', key: 'section:mine' })).toBeDefined()
   expect(await ui.find({ type: 'Button', key: `item:pr:${PR_URL}` })).toBeDefined()
-  // actions + help, gap, tracking (5 + heading + scroll line), gap, two stacked side lists (3 + 2 each) and their gap
-  expect(opened.at(-1)?.rows).toBe(2 + 1 + 7 + 1 + 11)
+  // actions + help, gap, pull requests (4 + heading + scroll line), gap, Actions and your PRs stacked (3 + 2 each) and their gap
+  expect(opened.at(-1)?.rows).toBe(2 + 1 + 6 + 1 + 11)
 
   // Detail only: the open item, no lists; then back to both.
   await ui.press({ key: 'layout' })

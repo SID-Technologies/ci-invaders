@@ -211,6 +211,8 @@ test('release detail draws invaders', async ($, on) => {
   await $.command.run({ command: 'pulse-release', args: 'v1.0.0' } as never)
   const ui = await $.ui.mount(pane())
   expect(await ui.find({ type: 'Raster', key: 'invaders' })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'section:actions', text: /^ACTIONS · 1/ })).toBeDefined() // listed under Actions, not Pull requests
+  expect(await ui.find({ type: 'Button', key: 'section:prs', text: /^PULL REQUESTS$/ })).toBeDefined()
   await ui.unmount()
 })
 
