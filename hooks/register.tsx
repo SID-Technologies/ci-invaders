@@ -3,58 +3,58 @@ import type { EngineInterface, Register, Timer } from 'claude-code'
 
 import type { Celebration, History, Logs, OpenPrs, Pr, Release, ReviewRequests, Run, Setup, Undo } from '../types'
 import {
+  FRAME_MS,
   PR_URL,
   RELEASE_URL,
-  FRAME_MS,
+  SOUND_FOR,
   SPINNER_EVERY,
   byUrgency,
-  SOUND_FOR,
-  isFlaky,
-  isPlainLogin,
-  parseHistory,
-  reviewerGlyph,
-  spoken,
-  ciContext,
-  parseReviewRequests,
-  reviewPrompt,
-  cleanLog,
-  fixPrompt,
-  parseActionsUrl,
-  prTransition,
-  readSettings,
-  releaseTransition,
   cells,
+  ciContext,
+  cleanLog,
   duration,
+  fixPrompt,
   glyph,
+  isFlaky,
   isLive,
-  overall,
-  isReleaseRunning,
+  isPlainLogin,
   isPrCreate,
   isReleaseCreate,
+  isReleaseRunning,
   mergeLabel,
+  nextRow,
+  overall,
+  parseActionsUrl,
+  parseHistory,
   parseJobs,
-  plannedJobs,
-  withWaitingJobs,
   parseOpenPrs,
   parsePr,
+  parseReviewRequests,
   parseRuns,
+  plannedJobs,
   prState,
   prToast,
+  prTransition,
+  readSettings,
   releaseInvaders,
   releaseItems,
   releaseState,
   releaseToast,
+  releaseTransition,
   reviewLabel,
+  reviewPrompt,
+  reviewerGlyph,
   segments,
   setupAdvice,
   setupText,
+  spoken,
   statusLine,
   summary,
-  nextRow,
   tally,
   tone,
   trouble,
   verdict,
+  withWaitingJobs,
   workflowRun,
 } from './lib'
 import type { Failure, PlannedJob, Settings, Shown, Tally, Transition } from './lib'
@@ -73,59 +73,64 @@ import {
 
 type $ = EngineInterface
 
-const PLUGIN = 'gh-pulse'
 const PANE = 'gh-pulse'
+const TITLE = 'gh-pulse'
+const STORE_KEY = 'tracked'
+
 const POLL_MS = 15_000
+const OPEN_PRS_EVERY = 4 // polls between refreshes of your PRs and review requests
+const RESEAT_MS = 80 // long enough for the board to redraw
+const UNDO_MS = 10_000
+const HISTORY_TTL_MS = 5 * 60_000
+
 const MAX_PRS = 5
 const MAX_RELEASES = 3
-const TITLE = 'gh-pulse'
-const BAND_BAR = 10
+const MAX_OPEN_PRS = 15
 const MAX_CHECKS = 8
 const MAX_JOBS = 5
+const HISTORY_RUNS = 20
+const LOG_PREVIEW = 15
+
+const BAND_BAR = 10
 const WORKFLOW_COLUMN = 16
 const TIME_COLUMN = 8
+
+const PR_FIELDS =
+  'number,title,url,state,isDraft,reviewDecision,mergeable,statusCheckRollup,headRefName,baseRefName,latestReviews,reviewRequests'
+const OPEN_PR_FIELDS = 'number,title,url,isDraft,statusCheckRollup'
+const RUN_FIELDS = 'databaseId,name,workflowName,displayTitle,url,status,conclusion,headBranch,startedAt,updatedAt,attempt'
+
+// Board elements are keyed by prefix: tracked rows, your PRs, review requests, section headings.
+const ITEM = 'item:'
+const ADD = 'add:'
+const REVIEW = 'review:'
+const SECTION = 'section:'
+
+const prKey = (pr: Pr) => `pr:${pr.url}`
+const releaseKey = (r: Release) => `release:${r.key}`
+
+const CELEBRATION_FRAMES: Record<Celebration['kind'], number> = {
+  merged: CONFETTI_FRAMES,
+  released: 40,
+  scrubbed: LOSS_FRAMES + 4,
+}
+
+type Layout = 'both' | 'list' | 'detail'
+const NEXT_LAYOUT = { both: 'list', list: 'detail', detail: 'both' } as const
+const LAYOUT_LABEL = { both: 'List and detail', list: 'List only', detail: 'Detail only' } as const
 
 const prs = atom({ plugin: 'gh-pulse', key: 'prs' } as const, [])
 const releases = atom({ plugin: 'gh-pulse', key: 'releases' } as const, [])
 const frame = atom({ plugin: 'gh-pulse', key: 'frame' } as const, 0)
 const isBandHidden = atom({ plugin: 'gh-pulse', key: 'isBandHidden' } as const, false)
 const selected = atom({ plugin: 'gh-pulse', key: 'selected' } as const, '')
-const layout = atom({ plugin: 'gh-pulse', key: 'layout' } as const, 'both' as 'both' | 'list' | 'detail')
-/** m walks these in turn, and the button says where it goes next. */
-const NEXT_LAYOUT = { both: 'list', list: 'detail', detail: 'both' } as const
-const LAYOUT_LABEL = { both: 'List and detail', list: 'List only', detail: 'Detail only' } as const
+const layout = atom({ plugin: 'gh-pulse', key: 'layout' } as const, 'both' as Layout)
 const setup = atom({ plugin: 'gh-pulse', key: 'setup' } as const, { gh: 'unknown', os: 'unknown' } as Setup)
 const celebration = atom({ plugin: 'gh-pulse', key: 'celebration' } as const, null as Celebration | null)
 const undo = atom({ plugin: 'gh-pulse', key: 'undo' } as const, null as Undo | null)
 const cursor = atom({ plugin: 'gh-pulse', key: 'cursor' } as const, '')
 const busy = atom({ plugin: 'gh-pulse', key: 'busy' } as const, '')
 const isKeysShown = atom({ plugin: 'gh-pulse', key: 'isKeysShown' } as const, false)
-/** Every key the board answers, as lazygit's ? lists them. */
-const KEYS: readonly (readonly [string, string])[] = [
-  ['↑ ↓', 'move through the list; the row you land on opens'],
-  ['1 2 3', 'jump to Tracking, Your open PRs, Waiting on your review'],
-  ['pgup pgdn', 'scroll the board'],
-  ['enter', 'select a row, or track one of yours'],
-  ['f', 'fix it: the failing logs into the prompt'],
-  ['e', 'rerun the failed jobs'],
-  ['l  y', 'next failing log · copy the log shown'],
-  ['a', 'review with Claude'],
-  ['o', 'open on GitHub'],
-  ['x  c  z', 'remove · clear everything · undo either'],
-  ['r', 'refresh now'],
-  ['m', 'list and detail, list only, detail only'],
-  ['esc', 'back to the prompt'],
-]
-
-/** Say on the board what an action is doing until it's done, where the person is looking. */
-async function showWhile<T>($: $, label: string, work: () => Promise<T>): Promise<T> {
-  await update($, busy, () => label)
-  try {
-    return await work()
-  } finally {
-    await update($, busy, () => '')
-  }
-}
 const logs = atom({ plugin: 'gh-pulse', key: 'logs' } as const, {} as Logs)
 const reviewRequests = atom({ plugin: 'gh-pulse', key: 'reviewRequests' } as const, { prs: [] } as ReviewRequests)
 const logCheck = atom({ plugin: 'gh-pulse', key: 'logCheck' } as const, '')
@@ -133,35 +138,11 @@ const history = atom({ plugin: 'gh-pulse', key: 'history' } as const, {} as Reco
 const avatars = atom({ plugin: 'gh-pulse', key: 'avatars' } as const, {} as Record<string, string>)
 const openPrs = atom({ plugin: 'gh-pulse', key: 'openPrs' } as const, { repo: '', prs: [] } as OpenPrs)
 
-const OPEN_PR_FIELDS = 'number,title,url,isDraft,statusCheckRollup'
-/** Your open PRs are listed every this many polls (and on open and refresh). */
-const OPEN_PRS_EVERY = 4
-const MAX_OPEN_PRS = 15
-/** Log lines the board shows under a failing check (the fix prompt takes more). */
-const LOG_PREVIEW = 15
-const STORE_KEY = 'tracked'
-/** How long after opening an item the ring is put back on its row: past one redraw. */
-const RESEAT_MS = 80
-/** The manifest's userConfig, read when the module (re)loads. */
+// Module state. Reset when the module reloads; $.state and $.store survive that.
 let settings: Settings = readSettings(undefined)
-/** Frames a celebration keeps the clock running. */
-const CELEBRATION_FRAMES: Record<Celebration['kind'], number> = {
-  merged: CONFETTI_FRAMES,
-  released: 40,
-  scrubbed: LOSS_FRAMES + 4,
-}
-/** The frame each Actions job was seen to finish on, by `<release key>|<job key>`: when its invader goes. */
-const doneAt = new Map<string, number>()
-/** Each release's invaders: where each job sits in the formation, and when it arrived. */
+const doneAt = new Map<string, number>() // `${release key}|${job key}` -> frame the job finished
 const fleets = new Map<string, ReturnType<typeof placeInvaders>>()
-/** Each release's ship, which carries on from frame to frame. */
 const ships = new Map<string, Ship>()
-const PR_FIELDS =
-  'number,title,url,state,isDraft,reviewDecision,mergeable,statusCheckRollup,headRefName,baseRefName,latestReviews,reviewRequests'
-/** CI history is fetched again after this long. */
-const HISTORY_TTL_MS = 5 * 60_000
-const HISTORY_RUNS = 20
-const RUN_FIELDS = 'databaseId,name,workflowName,displayTitle,url,status,conclusion,headBranch,startedAt,updatedAt,attempt'
 
 // ── gh ──────────────────────────────────────────────────────────────────
 
@@ -184,10 +165,9 @@ async function fetchPr($: $, ref: string): Promise<Pr> {
   return parsePr(await gh($, args))
 }
 
-/** The jobs each run's workflow file declares, by run id: the file at that commit never changes. */
+// By run id. A run's workflow file is fixed at its commit, so this never goes stale.
 const plans = new Map<number, PlannedJob[]>()
 
-/** The workflow file the run was started from, at its commit, read for the jobs it declares. */
 async function planFor($: $, run: Run): Promise<PlannedJob[]> {
   const known = plans.get(run.id)
   if (known) return known
@@ -203,21 +183,21 @@ async function planFor($: $, run: Run): Promise<PlannedJob[]> {
       )
     }
   } catch {
-    // No plan: we show the jobs GitHub has started, as before.
+    // Fall back to the jobs GitHub lists.
   }
   plans.set(run.id, planned)
   return planned
 }
 
 async function withJobs($: $, run: Run, previous?: Run): Promise<Run> {
-  // A run that had already finished, and hasn't been re-run since, keeps the jobs we have.
+  // Finished and not re-run since: the jobs can't have changed.
   const isSameFinish = previous?.state !== 'pending' && previous?.attempt === run.attempt
   if (run.state !== 'pending' && previous && isSameFinish && previous.jobs.length > 0) {
     return { ...run, jobs: previous.jobs }
   }
   try {
     const jobs = parseJobs(await gh($, ['run', 'view', String(run.id), '--json', 'jobs']))
-    // Jobs waiting on others aren't listed until they start: count them from the workflow file.
+    // GitHub only lists a job once it starts; add the ones still waiting on `needs`.
     return { ...run, jobs: withWaitingJobs(jobs, run.state === 'pending' ? await planFor($, run) : [], run.state === 'pending') }
   } catch {
     return { ...run, jobs: previous?.jobs ?? [] }
@@ -237,7 +217,7 @@ async function fetchRelease($: $, release: Release): Promise<Release> {
   return { ...release, runs, error: undefined }
 }
 
-/** A release from a tag, a workflow file, or (neither) the latest GitHub release. */
+// A tag, a workflow file, or (empty) the latest release.
 async function resolveRelease($: $, arg: string): Promise<Release> {
   const trimmed = arg.trim()
   if (/\.ya?ml$/.test(trimmed)) {
@@ -256,7 +236,7 @@ async function tryRun($: $, argv: string[]): Promise<{ exitCode: number; stdout:
   try {
     return await $.process.run(argv, { timeoutMs: 10_000 })
   } catch {
-    return undefined // not on PATH at all
+    return undefined // not installed
   }
 }
 
@@ -267,7 +247,6 @@ async function detectOs($: $): Promise<Setup['os']> {
   return uname === undefined ? 'windows' : 'unknown'
 }
 
-/** Is gh installed and logged in? Cheap: both are local checks. */
 async function checkGh($: $): Promise<boolean> {
   const version = await tryRun($, ['gh', '--version'])
   let state: Setup['gh'] = 'ready'
@@ -283,7 +262,6 @@ async function checkGh($: $): Promise<boolean> {
   return state === 'ready'
 }
 
-/** The setup message for a command to answer with, or undefined when gh is ready. */
 async function needsSetup($: $): Promise<string | undefined> {
   if (await checkGh($)) return undefined
   return setupText(await read($, setup))
@@ -331,7 +309,6 @@ async function upsertRelease($: $, next: Release): Promise<void> {
   await persistTracking($)
 }
 
-/** Something just happened to a tracked item: play it, say it, celebrate it, as settings allow. */
 async function onTransition($: $, key: string, happened: Transition, label: string): Promise<void> {
   const sound = SOUND_FOR[happened]
   if (settings.sounds && sound) void $.audio.play({ asset: sound }).catch(() => undefined)
@@ -351,7 +328,7 @@ function isCelebrating(party: Celebration | null, now: number): party is Celebra
   return party !== null && now - party.startFrame < CELEBRATION_FRAMES[party.kind]
 }
 
-// ── Fix it: the failing logs, into the prompt box ───────────────────────
+// ── Fix it ──────────────────────────────────────────────────────────────
 
 async function fetchFailedLog($: $, jobId: string): Promise<string[]> {
   const cached = (await read($, logs))[jobId]
@@ -369,7 +346,6 @@ async function fixIt($: $, key: string, surface: string): Promise<void> {
     $.ui.toast(`PR #${pr.number} has nothing failing`)
     return
   }
-  $.ui.toast(`Fetching ${failing.length === 1 ? 'the failing log' : `${failing.length} failing logs`}…`, { timeoutMs: 3000 })
   const failures: Failure[] = await Promise.all(
     failing.map(async c => {
       const jobId = parseActionsUrl(c.url)?.jobId
@@ -440,20 +416,15 @@ async function refreshReviewRequests($: $): Promise<void> {
   }
 }
 
-/** Your open PRs and the ones waiting on your review: the board's two lists. */
 async function refreshLists($: $): Promise<void> {
   await Promise.all([refreshOpenPrs($), refreshReviewRequests($)])
 }
 
 let isPolling = false
 let polls = 0
-/** A poll was asked to look at everything while another was running: the next one does. */
-let isEverythingDue = false
+let isEverythingDue = false // asked for while a poll was running
 
-/**
- * Look at everything in flight. Finished releases are looked at once a minute
- * (or right away with `everything`), so a re-run of one is noticed.
- */
+// Finished releases are rechecked every few polls, or now with `everything`, to catch re-runs.
 async function poll($: $, everything = false): Promise<void> {
   if (everything) isEverythingDue = true
   if (isPolling) return
@@ -464,7 +435,7 @@ async function poll($: $, everything = false): Promise<void> {
   try {
     if (!(await checkGh($))) return
     for (const pr of await read($, prs)) {
-      if (pr.state !== 'OPEN') continue // merged / closed: nothing left to watch
+      if (pr.state !== 'OPEN') continue
       try {
         await upsertPr($, await fetchPr($, pr.url))
       } catch (error) {
@@ -474,7 +445,6 @@ async function poll($: $, everything = false): Promise<void> {
       }
     }
     for (const release of await read($, releases)) {
-      // Every poll while it runs; once finished, now and then in case it is re-run.
       if (!isReleaseRunning(release) && !isEverything) continue
       await trackRelease($, release)
     }
@@ -486,18 +456,40 @@ async function poll($: $, everything = false): Promise<void> {
   }
 }
 
-/** Person-made moves of the board's focus ring so far: a newer one cancels a pending re-seat. */
-let ringMoves = 0
-/** The board's rows top to bottom as last drawn, by Button key, and the one holding the ring. */
-let rowKeys: readonly string[] = []
+// ── Board navigation ────────────────────────────────────────────────────
+
+let ringMoves = 0 // focus moves by the person; a newer one cancels a pending re-seat
 let focusedKey: string | undefined
-/** Each section's rows as last drawn, and the row the cursor was last on in each, as lazygit remembers per panel. */
+let rowKeys: readonly string[] = [] // as last drawn, top to bottom
 let sectionRows: Record<string, readonly string[]> = {}
 const lastInSection = new Map<string, string>()
-/** Section headings are Buttons keyed `section:<id>`, pressed by 1, 2 and 3. */
-const SECTION = 'section:'
 
-/** Put the cursor on a row, open it if it's a tracked item, and bring it into view. */
+const KEYS: readonly (readonly [string, string])[] = [
+  ['↑ ↓', 'move through the list; the row you land on opens'],
+  ['1 2 3', 'jump to Tracking, Your open PRs, Waiting on your review'],
+  ['pgup pgdn', 'scroll the board'],
+  ['enter', 'select a row, or track one of yours'],
+  ['f', 'fix it: the failing logs into the prompt'],
+  ['e', 'rerun the failed jobs'],
+  ['l  y', 'next failing log · copy the log shown'],
+  ['a', 'review with Claude'],
+  ['o', 'open on GitHub'],
+  ['x  c  z', 'remove · clear everything · undo either'],
+  ['r', 'refresh now'],
+  ['m', 'list and detail, list only, detail only'],
+  ['esc', 'back to the prompt'],
+]
+
+// Shows `label` in place of the help line until `work` finishes.
+async function showWhile<T>($: $, label: string, work: () => Promise<T>): Promise<T> {
+  await update($, busy, () => label)
+  try {
+    return await work()
+  } finally {
+    await update($, busy, () => '')
+  }
+}
+
 async function goToRow($: $, key: string): Promise<void> {
   ringMoves += 1
   await $.ui.focus({ requestId: PANE, key }).catch(() => undefined)
@@ -505,7 +497,6 @@ async function goToRow($: $, key: string): Promise<void> {
   await $.ui.scroll({ in: PANE, to: { key }, block: 'nearest' }).catch(() => undefined)
 }
 
-/** 1, 2, 3: to that section, where the cursor last was in it. */
 async function jumpToSection($: $, id: string): Promise<void> {
   const rows = sectionRows[id] ?? []
   const remembered = lastInSection.get(id)
@@ -515,10 +506,9 @@ async function jumpToSection($: $, id: string): Promise<void> {
 }
 
 /**
- * Open a tracked item. Its detail and buttons sit above the list, so opening one
- * changes how many buttons come before the rows, and the pane's ring (a place in
- * that order, not an element) would end up on another button. Once the board has
- * redrawn, put the ring back on the row, unless the person has moved it since.
+ * The pane's focus ring is an index into its focusable elements, not a key.
+ * Opening an item changes the buttons above the list, so after the redraw the
+ * index points at the wrong element. Put focus back on the row once it settles.
  */
 async function openItem($: $, key: string): Promise<void> {
   if ((await read($, selected)) === key) return
@@ -532,12 +522,8 @@ async function openItem($: $, key: string): Promise<void> {
   await prefetchLog($)
 }
 
-/** How long z can put back what Remove or Clear took. */
-const UNDO_MS = 10_000
-/** Bumped by each removal, so an older one's timer doesn't drop a newer undo. */
-let removals = 0
+let removals = 0 // so an older removal's timer can't clear a newer undo
 
-/** Keep what's about to go, so z can bring it back for a little while. */
 async function keepForUndo($: $, label: string): Promise<void> {
   const kept: Undo = { label, prs: await read($, prs), releases: await read($, releases), selected: await read($, selected) }
   await update($, undo, () => kept)
@@ -570,7 +556,7 @@ async function clearAll($: $): Promise<void> {
   await persistTracking($)
 }
 
-/** Rows the board asks for showing just the list: the actions, the hint, then each group's heading and rows. */
+// Actions, help line, TRACKING, then each group's heading and rows.
 async function listOnlyRows($: $): Promise<number> {
   const prCount = (await read($, prs)).length
   const releaseCount = (await read($, releases)).length
@@ -589,18 +575,11 @@ async function cycleLayout($: $): Promise<void> {
   const shown = NEXT_LAYOUT[await read($, layout)]
   await update($, layout, () => shown)
   const isSmall = shown === 'list'
-  // Re-asking sets the height; a size the person dragged still wins.
+  // Re-opening sets the height, unless the person has resized the pane.
   await $.ui.open({ id: PANE, title: TITLE, rows: isSmall ? await listOnlyRows($) : undefined })
 }
 
-const prKey = (pr: Pr) => `pr:${pr.url}`
-const releaseKey = (r: Release) => `release:${r.key}`
-/** Board rows are Buttons, so ↑↓ walk them: a tracked item, or one of your open PRs to track. */
-const ITEM = 'item:'
-const ADD = 'add:'
-const REVIEW = 'review:'
-
-/** The board item in the browser, through gh so it works on every OS. */
+// Through gh, so it works on every OS.
 async function openInBrowser($: $, key: string): Promise<void> {
   try {
     const pr = (await read($, prs)).find(one => prKey(one) === key)
@@ -627,7 +606,7 @@ async function untrack($: $, key: string): Promise<void> {
   await persistTracking($)
 }
 
-// ── Remembered across sessions ──────────────────────────────────────────
+// ── Persistence ─────────────────────────────────────────────────────────
 
 type Stored = { prs: string[]; releases: Omit<Release, 'runs' | 'error'>[] }
 let lastStored = ''
@@ -643,7 +622,7 @@ async function persistTracking($: $): Promise<void> {
     await $.store.set(STORE_KEY, stored)
     lastStored = text
   } catch {
-    // Remembering is a convenience; tracking carries on without it.
+    // Not fatal; tracking works without it.
   }
 }
 
@@ -663,22 +642,21 @@ async function restoreTracking($: $): Promise<void> {
       const pr = await fetchPr($, url)
       if (pr.state === 'OPEN') await upsertPr($, pr)
     } catch {
-      // Gone or unreachable: let it drop.
+      // Deleted or no longer reachable.
     }
   }
   for (const release of stored.releases ?? []) await trackRelease($, { ...release, runs: [] })
   await refreshStatus($)
 }
 
-// ── The log under a failing check ───────────────────────────────────────
+// ── Detail data ─────────────────────────────────────────────────────────
 
-/** The failing check whose log the board shows for a PR: the chosen one, else the first. */
 function shownFailure(pr: Pr, chosen: string) {
   const failing = pr.checks.filter(c => c.state === 'fail' && parseActionsUrl(c.url)?.jobId)
   return failing.find(c => chosen === `${prKey(pr)}#${c.url}`) ?? failing[0]
 }
 
-/** Fetch what the selected PR's detail shows: its failing log, CI history, reviewer avatars. */
+// Log, CI history and avatars for the selected PR.
 async function prefetchLog($: $): Promise<void> {
   const key = await read($, selected)
   const list = await read($, prs)
@@ -697,7 +675,6 @@ function historyKey(pr: Pr, workflow: string): string {
   return `${pr.repo}|${pr.base ?? ''}|${workflow}`
 }
 
-/** The last runs of each of the PR's workflows on its base branch, cached a few minutes. */
 async function fetchHistory($: $, pr: Pr): Promise<void> {
   if (!pr.base) return
   const workflows = [...new Set(pr.checks.map(c => c.workflow).filter((w): w is string => Boolean(w)))]
@@ -716,7 +693,7 @@ async function fetchHistory($: $, pr: Pr): Promise<void> {
   }
 }
 
-/** Reviewer avatars as base64 PNGs; curl and base64 do the bytes, where there's a shell. */
+// $.http.fetch only returns text, so curl and base64 fetch the PNG.
 async function fetchAvatars($: $, pr: Pr): Promise<void> {
   const have = await read($, avatars)
   for (const reviewer of (pr.reviews ?? []).slice(0, 6)) {
@@ -731,7 +708,6 @@ async function fetchAvatars($: $, pr: Pr): Promise<void> {
   }
 }
 
-/** `l`: show the next failing check's log. */
 async function nextLog($: $, key: string): Promise<void> {
   const pr = (await read($, prs)).find(one => prKey(one) === key)
   if (!pr) return
@@ -755,7 +731,7 @@ async function copyLog($: $, key: string, surface: string): Promise<void> {
   $.ui.toast(copied.isCopied ? `Copied ${lines.length} log lines` : "Couldn't copy the log")
 }
 
-// ── Rerun what failed ───────────────────────────────────────────────────
+// ── Rerun and review ────────────────────────────────────────────────────
 
 async function rerunFailed($: $, key: string): Promise<void> {
   const pr = (await read($, prs)).find(one => prKey(one) === key)
@@ -816,18 +792,16 @@ export const register: Register = (on, options) => {
     pollTimer?.cancel()
     frameTimer?.cancel()
     pollTimer = $.clock.every(POLL_MS, () => void poll($))
-    // The spinner only turns while something is in flight.
+    // Only tick while something is animating.
     frameTimer = $.clock.every(FRAME_MS, () => {
       void (async () => {
         const party = await read($, celebration)
         const now = await read($, frame)
-        // Invaders still bursting, falling or celebrating keep it turning too, so no frame freezes half-drawn.
         const isSettling = [...doneAt.values()].some(at => now - at < Math.max(LOSS_FRAMES, HIT_FRAMES + VICTORY_FRAMES))
         const isBusy = (await read($, busy)) !== ''
         if (!isLive(await read($, prs), await read($, releases)) && !isCelebrating(party, now) && !isSettling && !isBusy) return
         const n = ((await read($, frame)) + 1) % 100_000
         await update($, frame, () => n)
-        // The status line shows only the spinner: redraw it when that turns.
         if (n % SPINNER_EVERY === 0) await refreshStatus($)
       })()
     })
@@ -884,7 +858,7 @@ export const register: Register = (on, options) => {
     return { text: hadAny ? 'Cleared. Nothing tracked. Press z on the board within 10s to put it back.' : 'Nothing was tracked.' }
   })
 
-  // Auto-track whatever Claude opens: PRs, releases, dispatched workflows.
+  // Track what Claude creates or pushes.
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const ran = await next(e)
     if (ran.deny !== undefined || ran.isError === true) return ran
@@ -904,7 +878,6 @@ export const register: Register = (on, options) => {
           $.ui.toast(`Watching ${release.label} pipelines`)
         }
       } else if (/\bgit\s+push\b/.test(e.command)) {
-        // A push to a branch with a PR: watch the checks it just set off.
         const pr = await fetchPr($, '')
         if (pr.state === 'OPEN' && !(await read($, prs)).some(one => one.url === pr.url)) {
           await trackPr($, pr.url)
@@ -922,12 +895,12 @@ export const register: Register = (on, options) => {
         }
       }
     } catch {
-      // Tracking is best effort; never get in the way of the tool call.
+      // Best effort; never fail the tool call.
     }
     return ran
   })
 
-  // ── Claude knows your CI: a line beside each prompt, when it says something new ──
+  // ── Prompt context ──
 
   let lastContext = ''
   on('prompt.submit', async ($, e, next) => {
@@ -939,7 +912,7 @@ export const register: Register = (on, options) => {
     return next({ ...e, context: [...(e.context ?? []), block] })
   })
 
-  // ── The band above the prompt: one line per tracked thing ──
+  // ── Band ──
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const prList = await read($, prs)
@@ -1016,7 +989,7 @@ export const register: Register = (on, options) => {
                   hotkey="b"
                   label="open board"
                   onPress={async () => {
-                    // The band holds the keys here, so the board can't take them itself.
+                    // The band has focus here, so the board can't take it.
                     await openBoard($)
                     $.ui.toast('Board open · esc, then ctrl+x tab to use its keys', { timeoutMs: 5000 })
                   }}
@@ -1030,29 +1003,26 @@ export const register: Register = (on, options) => {
     )
   })
 
-  // ── The board: a list ↑↓ walk, the selected item below it, then your open PRs ──
+  // ── Board ──
 
-  // The selection follows the focus ring: arrowing onto a row shows it.
   on('ui.focus', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
     const element = e.element ?? ''
-    if (e.origin.kind === 'person') ringMoves += 1
+    const isPerson = e.origin.kind === 'person'
+    if (isPerson) ringMoves += 1
     const result = await next(e)
     if (!('deny' in result)) {
       focusedKey = e.element
-      for (const [id, rows] of Object.entries(sectionRows)) if (e.element && rows.includes(e.element)) lastInSection.set(id, e.element)
-      await update($, cursor, () => e.element ?? '')
+      for (const [id, rows] of Object.entries(sectionRows)) if (rows.includes(element)) lastInSection.set(id, element)
+      await update($, cursor, () => element)
     }
-    if (element.startsWith(ITEM) && e.origin.kind === 'person') await openItem($, element.slice(ITEM.length))
+    if (isPerson && element.startsWith(ITEM)) await openItem($, element.slice(ITEM.length))
     return result
   })
 
-  // A board taller than its pane scrolls on the arrows, which would leave the
-  // selection behind. Like any list (lazygit, htop, a file picker), ↑↓ move the
-  // selection and the view follows it; the wheel and page keys still scroll, and
-  // past either end of the list the arrows scroll too, to reach what's above and below.
+  // When the board overflows, the engine turns ↑↓ into scrolling. Move the
+  // selection instead and scroll it into view; the wheel and page keys still scroll.
   on('ui.scroll', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
     if (e.origin.kind !== 'person' || e.pointer || Math.abs(e.by) !== 1) return next(e)
-    // From a heading, down is its first row and up the row above it.
     const first = focusedKey?.startsWith(SECTION) ? sectionRows[focusedKey.slice(SECTION.length)]?.[0] : undefined
     const to = first ? (e.by > 0 ? first : nextRow(rowKeys, first, -1)) : nextRow(rowKeys, focusedKey, e.by)
     if (!to) return next(e)
@@ -1063,7 +1033,7 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const elements = $.ui.resolve(e)
     const { Box, Button, Link, Text } = elements
-    // Pixel art is terminal-only; elsewhere the effects are simply left out.
+    // Raster and Image are terminal-only.
     const Raster = 'Raster' in elements ? elements.Raster : undefined
     const Image = 'Image' in elements ? elements.Image : undefined
     const party = await read($, celebration)
@@ -1133,7 +1103,6 @@ export const register: Register = (on, options) => {
       </Box>
     )
 
-    /** glyph · workflow · name · time, columns aligned. */
     const Row = ({ key, state, workflow, name, url, ms, indent = 0, isWaiting = false }: {
       key: string
       state: Shown
@@ -1389,7 +1358,6 @@ export const register: Register = (on, options) => {
       )
     }
 
-    /** One list row: marker, state, the label ↑↓ land on, title, a small bar. */
     const ListRow = ({ key, marker, state, label, title, t, isOpen, buttonKey, onPress }: {
       key: string
       marker: string
@@ -1401,7 +1369,6 @@ export const register: Register = (on, options) => {
       buttonKey: string
       onPress: () => unknown
     }) => (
-      // The open row, or the one the cursor is on, is filled the way Claude Code fills your messages, so it reads in any theme.
       <Box key={key} gap={1} {...(isOpen || cursorKey === buttonKey ? { backgroundColor: 'userMessageBackground' } : {})}>
         <Text color="cyan" dimColor={!isOpen}>
           {marker}
@@ -1442,8 +1409,11 @@ export const register: Register = (on, options) => {
       })
 
     const tracked = new Set(prList.map(pr => pr.url))
+    const trackAndOpen = async (url: string) => {
+      await trackPr($, url)
+      await update($, selected, () => `pr:${url}`)
+    }
     const untracked = mine.prs.filter(pr => !tracked.has(pr.url))
-    // The three lists, like lazygit's panels: the one holding the cursor is lit, and says where in it you are.
     const sections = {
       tracking: shown === 'detail' ? [] : [...prItems, ...actionItems].map(item => `${ITEM}${item.key}`),
       mine: shown !== 'both' ? [] : untracked.map(pr => `${ADD}${pr.url}`),
@@ -1470,10 +1440,13 @@ export const register: Register = (on, options) => {
     )
     const open = items.find(item => item.key === openKey)
     const detail = open ? ('pr' in open ? drawPr(open.pr) : drawRelease(open.release)) : null
+    const openPr = open && 'pr' in open ? open.pr : undefined
+    const failingChecks = openPr?.checks.filter(c => c.state === 'fail') ?? []
+    const hasFailedRuns = open && 'release' in open && open.release.runs.some(run => run.state === 'fail')
 
     return (
       <Box flexDirection="column" paddingX={1} gap={1}>
-        {/* Actions, then the help on a line of its own so nothing cuts it off. */}
+        {/* Help on its own line so it never gets truncated. */}
         <Box flexDirection="column">
           <Box gap={3} flexWrap="wrap">
             <Button key="refresh" plain dimColor hotkey="r" label="Refresh" onPress={() => showWhile($, 'Refreshing', () => Promise.all([poll($, true), refreshLists($)]))} />
@@ -1485,20 +1458,20 @@ export const register: Register = (on, options) => {
               label={LAYOUT_LABEL[NEXT_LAYOUT[shown]]}
               onPress={() => cycleLayout($)}
             />
-            {open && 'pr' in open && open.pr.checks.some(c => c.state === 'fail') && (
+            {failingChecks.length > 0 && (
               <Button key="fix" plain hotkey="f" label="Fix it" onPress={() => showWhile($, 'Reading the failing logs', () => fixIt($, openKey, e.surface))} />
             )}
-            {open && (('pr' in open && open.pr.checks.some(c => c.state === 'fail')) || ('release' in open && open.release.runs.some(run => run.state === 'fail'))) && (
+            {(failingChecks.length > 0 || hasFailedRuns) && (
               <Button key="rerun" plain dimColor hotkey="e" label="Rerun failed" onPress={() => showWhile($, 'Rerunning the failed jobs', () => rerunFailed($, openKey))} />
             )}
-            {open && 'pr' in open && open.pr.checks.filter(c => c.state === 'fail').length > 1 && (
+            {failingChecks.length > 1 && (
               <Button key="log" plain dimColor hotkey="l" label="Next log" onPress={() => showWhile($, 'Loading the log', () => nextLog($, openKey))} />
             )}
-            {open && 'pr' in open && open.pr.checks.some(c => c.state === 'fail') && (
+            {failingChecks.length > 0 && (
               <Button key="copy" plain dimColor hotkey="y" label="Copy log" onPress={() => copyLog($, openKey, e.surface)} />
             )}
-            {open && 'pr' in open && reviews.prs.some(one => one.url === open.pr.url) && (
-              <Button key="ask" plain hotkey="a" label="Review with Claude" onPress={() => askForReview($, open.pr.url)} />
+            {openPr && reviews.prs.some(one => one.url === openPr.url) && (
+              <Button key="ask" plain hotkey="a" label="Review with Claude" onPress={() => askForReview($, openPr.url)} />
             )}
             {openKey && <Button key="open" plain dimColor hotkey="o" label="Open" onPress={() => openInBrowser($, openKey)} />}
             {openKey && <Button key="remove" plain dimColor hotkey="x" label="Remove" onPress={() => untrack($, openKey)} />}
@@ -1524,7 +1497,6 @@ export const register: Register = (on, options) => {
           )}
         </Box>
 
-        {/* The opened item stays put under the actions, whatever the lists below do. */}
         {isShowingKeys && (
           <Box key="keys-list" flexDirection="column">
             {KEYS.map(([keys, does]) => (
@@ -1580,10 +1552,7 @@ export const register: Register = (on, options) => {
                 isOpen: false,
                 marker: '+',
                 buttonKey: `${ADD}${pr.url}`,
-                onPress: async () => {
-                  await trackPr($, pr.url)
-                  await update($, selected, () => `pr:${pr.url}`)
-                },
+                onPress: () => trackAndOpen(pr.url),
               })
             })}
           </Box>
@@ -1605,10 +1574,7 @@ export const register: Register = (on, options) => {
                   isOpen: false,
                   marker: '?',
                   buttonKey: `${REVIEW}${pr.url}`,
-                  onPress: async () => {
-                    await trackPr($, pr.url)
-                    await update($, selected, () => `pr:${pr.url}`)
-                  },
+                  onPress: () => trackAndOpen(pr.url),
                 }),
               )}
           </Box>
