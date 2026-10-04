@@ -40,7 +40,7 @@ const PR_JSON = JSON.stringify({
   statusCheckRollup: ROLLUP,
 })
 
-test('check verdicts cover CheckRuns and StatusContexts', async () => {
+test('checkState handles CheckRuns and StatusContexts', async () => {
   expect(checkState('COMPLETED', 'SUCCESS')).toBe('pass')
   expect(checkState('COMPLETED', 'TIMED_OUT')).toBe('fail')
   expect(checkState('COMPLETED', 'SKIPPED')).toBe('skip')
@@ -59,7 +59,7 @@ test('check verdicts cover CheckRuns and StatusContexts', async () => {
   expect(tally(checks)).toEqual({ pass: 2, fail: 1, pending: 1, skip: 0, total: 4 })
 })
 
-test('look: segmented bar, durations, summary', async () => {
+test('bar segments, durations and summaries', async () => {
   const t = { pass: 5, fail: 1, pending: 3, skip: 1, total: 10 }
   for (const width of [3, 10, 57]) {
     const segs = segments(t, width)
@@ -95,14 +95,14 @@ test('look: segmented bar, durations, summary', async () => {
   expect(summary({ pass: 2, fail: 0, pending: 0, skip: 0, total: 2 })).toBe('2 passed')
 })
 
-test('workflow dispatches are recognised', async () => {
+test('workflowRun finds the workflow name', async () => {
   expect(workflowRun('gh workflow run release.yml -f tag=v1')).toBe('release.yml')
   expect(workflowRun('gh workflow run --ref main "deploy.yaml"')).toBe('deploy.yaml')
   expect(workflowRun('gh run list')).toBeUndefined()
   expect(workflowRun('gh workflow run -R acme/rocket ship.yml && echo ok')).toBe('ship.yml')
 })
 
-test('toasts fire on the transitions that matter', async () => {
+test('toasts on state transitions', async () => {
   const pending: Pr = {
     url: PR_URL, number: 482, repo: 'acme/rocket', title: 't', branch: 'b', state: 'OPEN',
     isDraft: false, review: '', mergeable: 'MERGEABLE',
@@ -130,7 +130,7 @@ test('toasts fire on the transitions that matter', async () => {
   expect(isLive([], [release])).toBe(true)
 })
 
-test('a PR Claude opens is tracked and drawn with links', async ($, on) => {
+test('gh pr create tracks the PR', async ($, on) => {
   // Stand in for gh and for the Bash tool.
   on('process.run', async (_$, e) => {
     if (e.argv[1] === 'pr' && e.argv[2] === 'view') {
@@ -174,7 +174,7 @@ test('a PR Claude opens is tracked and drawn with links', async ($, on) => {
   await band.unmount()
 })
 
-test('the board lists what is tracked, your open PRs, and tracks one in a press', async ($, on) => {
+test('board lists tracked items and your PRs, and tracks on press', async ($, on) => {
   const second = PR_JSON.replace(/482/g, '483').replace('warp drive', 'hyperspace')
   const mineUrl = PR_URL.replace('482', '484')
   const MINE = JSON.stringify([
@@ -256,7 +256,7 @@ test('the board lists what is tracked, your open PRs, and tracks one in a press'
   await ui.unmount()
 })
 
-test('without gh, or signed out, it says what to do and waits', async ($, on) => {
+test('shows setup steps when gh is missing or signed out', async ($, on) => {
   let installed = false
   let signedIn = false
   const reply = (exitCode: number, stdout = '') => ({ value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })

@@ -50,7 +50,7 @@ function fakeGh(ran: string[][], conclusion = 'FAILURE') {
   }
 }
 
-test('Claude hears what is failing, and nothing when nothing changed', async ($, on) => {
+test('prompt context is sent when failing or changed, skipped otherwise', async ($, on) => {
   const pr = JSON.parse(prJson()) as Record<string, unknown>
   expect(parseReviewRequests(JSON.stringify([{ number: 9, title: 't', url: OTHER_URL, repository: { nameWithOwner: 'acme/engine' } }])))
     .toEqual([{ url: OTHER_URL, number: 9, title: 't', repo: 'acme/engine' }])
@@ -89,7 +89,7 @@ test('Claude hears what is failing, and nothing when nothing changed', async ($,
   expect(seen.at(-1)).toBeUndefined()
 })
 
-test('the failing log shows under the checks, y copies it, e reruns', async ($, on) => {
+test('failing log shows in the detail; y copies it, e reruns', async ($, on) => {
   const ran: string[][] = []
   const copied: string[] = []
   on('process.run', fakeGh(ran))
@@ -110,7 +110,7 @@ test('the failing log shows under the checks, y copies it, e reruns', async ($, 
   await ui.unmount()
 })
 
-test('PRs waiting on your review: listed, tracked in a press, handed to Claude with a', async ($, on) => {
+test('review requests are listed, trackable, and a fills a review prompt', async ($, on) => {
   const ran: string[][] = []
   const filled: string[] = []
   on('process.run', fakeGh(ran))
@@ -132,7 +132,7 @@ test('PRs waiting on your review: listed, tracked in a press, handed to Claude w
   await ui.unmount()
 })
 
-test('a git push to a branch with a PR starts tracking it', async ($, on) => {
+test('git push tracks the PR for the branch', async ($, on) => {
   const ran: string[][] = []
   on('process.run', fakeGh(ran))
   on('tool.call', { tool: 'Bash' }, async () => ({ result: { stdout: '', stderr: '', interrupted: false }, text: 'To github.com:acme/rocket.git\n' }) as never)
@@ -144,7 +144,7 @@ test('a git push to a branch with a PR starts tracking it', async ($, on) => {
   await ui.unmount()
 })
 
-test('tracked PRs are remembered for the next session', async ($, on) => {
+test('tracked PRs persist across sessions', async ($, on) => {
   const saved: unknown[] = []
   on('process.run', fakeGh([]))
   on('store.set', async (_$, e) => (saved.push(e.value), { value: undefined }))
@@ -155,7 +155,7 @@ test('tracked PRs are remembered for the next session', async ($, on) => {
   expect(saved.at(-1)).toEqual({ prs: [], releases: [] })
 })
 
-test('arrows walk the rows, and hand back to scrolling past either end', () => {
+test('nextRow steps through rows and stops at the ends', () => {
   const rows = ['item:a', 'item:b', 'add:c']
   expect(nextRow(rows, 'item:a', 1)).toBe('item:b')
   expect(nextRow(rows, 'add:c', -1)).toBe('item:b')
@@ -165,7 +165,7 @@ test('arrows walk the rows, and hand back to scrolling past either end', () => {
   expect(nextRow(rows, 'refresh', -1)).toBeUndefined()
 })
 
-test('x and c can be undone with z', async ($, on) => {
+test('z undoes remove and clear', async ($, on) => {
   on('process.run', fakeGh([]))
   await $.command.run({ command: 'pulse-pr', args: PR_URL } as never)
   const ui = await $.ui.mount(pane)
@@ -183,7 +183,7 @@ test('x and c can be undone with z', async ($, on) => {
   await ui.unmount()
 })
 
-test('1, 2 and 3 jump to a section and open what is there', async ($, on) => {
+test('section hotkeys jump to and open the first row', async ($, on) => {
   on('process.run', fakeGh([]))
   await $.command.run({ command: 'pulse-pr', args: PR_URL } as never)
   const ui = await $.ui.mount(pane)
@@ -193,7 +193,7 @@ test('1, 2 and 3 jump to a section and open what is there', async ($, on) => {
   await ui.unmount()
 })
 
-test('the board says what an action is doing until it is done', async ($, on) => {
+test('busy label shows while an action runs', async ($, on) => {
   let release: () => void = () => undefined
   const held = new Promise<void>(resolve => (release = resolve))
   const gh = fakeGh([])
@@ -212,7 +212,7 @@ test('the board says what an action is doing until it is done', async ($, on) =>
   await ui.unmount()
 })
 
-test('h lists every key, and hides them again', async ($, on) => {
+test('h toggles the key list', async ($, on) => {
   on('process.run', fakeGh([]))
   await $.command.run({ command: 'pulse-pr', args: PR_URL } as never)
   const ui = await $.ui.mount(pane)
