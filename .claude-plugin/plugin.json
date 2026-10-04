@@ -1,11 +1,21 @@
 {
   "name": "gh-pulse",
   "version": "0.1.0",
-  "description": "Watch PR checks and GitHub Actions release pipelines from inside Claude Code",
+  "description": "PR checks and GitHub Actions runs, live in Claude Code. Failing logs one key from Claude, and Space Invaders for your pipelines.",
   "author": {
     "name": "SID Technologies"
   },
   "repository": "https://github.com/SID-Technologies/gh-pulse",
+  "homepage": "https://github.com/SID-Technologies/gh-pulse",
+  "license": "MIT",
+  "keywords": [
+    "github",
+    "github-actions",
+    "ci",
+    "pull-requests",
+    "claude-code",
+    "mod"
+  ],
   "types": "./types/index.d.ts",
   "userConfig": {
     "claudeContext": {
