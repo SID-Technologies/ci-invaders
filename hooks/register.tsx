@@ -97,7 +97,6 @@ const HISTORY_RUNS = 20
 const LOG_PREVIEW = 15
 
 const BAND_BAR = 10
-const WORKFLOW_COLUMN = 16
 const TIME_COLUMN = 8
 
 const PR_FIELDS =
@@ -1192,37 +1191,49 @@ export const register: Register = (on, options) => {
       </Box>
     )
 
-    const Row = ({ key, state, workflow, name, url, ms, indent = 0, isWaiting = false }: {
+    // A detail row: status, group (a check's workflow, a job's run), name, time.
+    // Fixed widths, shared by every row in the detail, so the columns line up.
+    const groupWidthOf = (groups: readonly string[]) => Math.min(24, Math.max(0, ...groups.map(group => group.length)))
+    const Row = ({ key, state, group, groupWidth, name, url, ms, isWaiting = false, isDim = false }: {
       key: string
       state: Shown
-      isWaiting?: boolean
-      workflow?: string
+      group: string
+      groupWidth: number
       name: string
       url?: string
       ms?: number
-      indent?: number
-    }) => (
-      <Box key={key} gap={2} paddingLeft={indent}>
-        <Text color={tone(state)}>{glyph(state, f)}</Text>
-        {workflow !== undefined && (
-          <Box width={WORKFLOW_COLUMN} flexShrink={0}>
-            <Text dimColor wrap="truncate-end">
-              {workflow}
-            </Text>
+      isWaiting?: boolean
+      isDim?: boolean
+    }) => {
+      const columns = [1, groupWidth, TIME_COLUMN].filter(w => w > 0)
+      const nameWidth = Math.max(8, inner - columns.reduce((sum, w) => sum + w, 0) - 2 * columns.length)
+      return (
+        <Box key={key} gap={2}>
+          <Box width={1} flexShrink={0}>
+            <Text color={tone(state)}>{glyph(state, f)}</Text>
           </Box>
-        )}
-        <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden">
-          {url ? (
-            <Link href={url} label={clip(name, inner - indent - 1 - TIME_COLUMN - (workflow === undefined ? 4 : WORKFLOW_COLUMN + 6))} />
-          ) : (
-            <Text wrap="truncate-end">{name}</Text>
+          {groupWidth > 0 && (
+            <Box width={groupWidth} flexShrink={0}>
+              <Text dimColor wrap="truncate">
+                {clip(group, groupWidth)}
+              </Text>
+            </Box>
           )}
+          <Box width={nameWidth} flexShrink={0} overflow="hidden">
+            {url ? (
+              <Link href={url} label={clip(name, nameWidth)} />
+            ) : (
+              <Text dimColor={isDim} wrap="truncate">
+                {clip(name, nameWidth)}
+              </Text>
+            )}
+          </Box>
+          <Box width={TIME_COLUMN} flexShrink={0} justifyContent="flex-end">
+            <Text dimColor>{isWaiting ? 'waiting' : state === 'pending' ? 'running' : duration(ms)}</Text>
+          </Box>
         </Box>
-        <Box width={TIME_COLUMN} flexShrink={0} justifyContent="flex-end">
-          <Text dimColor>{isWaiting ? 'waiting' : state === 'pending' ? 'running' : duration(ms)}</Text>
-        </Box>
-      </Box>
-    )
+      )
+    }
 
     const items = [
       ...[...prList].reverse().map(pr => ({
@@ -1249,7 +1260,8 @@ export const register: Register = (on, options) => {
     const drawPr = (pr: Pr) => {
       const t = tally(pr.checks)
       const state = prState(pr)
-      const hasWorkflows = pr.checks.some(c => c.workflow)
+      const workflows = [...new Set(pr.checks.map(c => c.workflow).filter((w): w is string => Boolean(w)))]
+      const groupWidth = groupWidthOf(workflows)
       // Failures and their log first, then everything else.
       const failing = pr.checks.filter(c => c.state === 'fail')
       const others = byUrgency(pr.checks.filter(c => c.state !== 'fail'))
@@ -1257,7 +1269,8 @@ export const register: Register = (on, options) => {
         Row({
           key: `${pr.url}#${c.workflow ?? ''}/${c.name}`,
           state: c.state,
-          workflow: hasWorkflows ? c.workflow ?? '' : undefined,
+          group: c.workflow ?? '',
+          groupWidth,
           name: c.name,
           url: c.url,
           ms: c.durationMs,
@@ -1332,8 +1345,10 @@ export const register: Register = (on, options) => {
           )}
 
           {settings.heatmap && pr.base && (() => {
-            const workflows = [...new Set(pr.checks.map(c => c.workflow).filter((w): w is string => Boolean(w)))].slice(0, 6)
-            const rows = workflows.map(w => ({ workflow: w, past: pastRuns[historyKey(pr, w)] })).filter(row => row.past && row.past.results.length > 0)
+            const rows = workflows
+              .slice(0, 6)
+              .map(w => ({ workflow: w, past: pastRuns[historyKey(pr, w)] }))
+              .filter(row => row.past && row.past.results.length > 0)
             if (rows.length === 0) return null
             return (
               <Box flexDirection="column">
@@ -1342,9 +1357,10 @@ export const register: Register = (on, options) => {
                 </Text>
                 {rows.map(row => (
                   <Box key={`history-${row.workflow}`} gap={2}>
-                    <Box width={WORKFLOW_COLUMN} flexShrink={0}>
-                      <Text dimColor wrap="truncate-end">
-                        {row.workflow}
+                    <Box width={1} flexShrink={0} />
+                    <Box width={Math.max(groupWidth, 1)} flexShrink={0}>
+                      <Text dimColor wrap="truncate">
+                        {clip(row.workflow, Math.max(groupWidth, 1))}
                       </Text>
                     </Box>
                     <Box>
@@ -1396,6 +1412,7 @@ export const register: Register = (on, options) => {
 
     const drawRelease = (r: Release) => {
       const t = tally(releaseItems(r))
+      const runWidth = groupWidthOf(r.runs.map(run => run.name))
       const state = releaseState(r)
       return (
         <Box key={`detail-${r.key}`} flexDirection="column" gap={1}>
@@ -1438,14 +1455,23 @@ export const register: Register = (on, options) => {
             <Box flexDirection="column">
               {r.runs.map(run => (
                 <Box key={`run-${run.id}`} flexDirection="column">
-                  {Row({ key: `run-row-${run.id}`, state: run.state, name: run.name, url: run.url || undefined, ms: run.durationMs })}
+                  {Row({
+                    key: `run-row-${run.id}`,
+                    state: run.state,
+                    group: run.name,
+                    groupWidth: runWidth,
+                    name: run.title || `run ${run.id}`,
+                    url: run.url || undefined,
+                    ms: run.durationMs,
+                  })}
                   {byUrgency(run.jobs.filter(job => job.state !== 'pass'))
                     .slice(0, MAX_JOBS)
                     .map(job =>
                       Row({
                         key: `job-${run.id}-${job.name}`,
-                        indent: 3,
                         state: job.state,
+                        group: '',
+                        groupWidth: runWidth,
                         name: job.name,
                         url: job.url,
                         ms: job.durationMs,
