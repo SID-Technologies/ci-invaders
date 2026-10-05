@@ -56,6 +56,7 @@ import {
   tally,
   tone,
   trouble,
+  upsertBy,
   verdict,
   withWaitingJobs,
   workflowRun,
@@ -295,7 +296,7 @@ async function refreshStatus($: $): Promise<void> {
 async function upsertPr($: $, next: Pr): Promise<void> {
   const before = (await read($, prs)).find(pr => pr.url === next.url)
   await update($, prs, list =>
-    [...list.filter(pr => pr.url !== next.url), next].slice(-MAX_PRS),
+    upsertBy(list, next, pr => pr.url === next.url, MAX_PRS),
   )
   const toast = prToast(before, next)
   if (toast) $.ui.toast(toast, { timeoutMs: 6000 })
@@ -319,7 +320,7 @@ async function upsertRelease($: $, next: Release): Promise<void> {
   }
   fleets.set(next.key, placeInvaders(fleets.get(next.key) ?? new Map(), releaseInvaders(next), now))
   await update($, releases, list =>
-    [...list.filter(r => r.key !== next.key), next].slice(-MAX_RELEASES),
+    upsertBy(list, next, r => r.key === next.key, MAX_RELEASES),
   )
   const toast = releaseToast(before, next)
   if (toast) $.ui.toast(toast, { timeoutMs: 8000 })
@@ -987,6 +988,7 @@ export const register: Register = (on, options) => {
     const rows = [
       ...prList.slice(-2).map(pr => ({
         key: pr.url,
+        repo: pr.repo,
         isParty: isCelebrating(party, f) && party.kind === 'merged' && party.key === prKey(pr),
         state: prState(pr) as Shown,
         label: `#${pr.number}`,
@@ -995,6 +997,7 @@ export const register: Register = (on, options) => {
       })),
       ...releaseList.slice(-1).map(r => ({
         key: r.key,
+        repo: r.repo ?? '',
         isParty: isCelebrating(party, f) && party.kind === 'released' && party.key === releaseKey(r),
         state: releaseState(r) as Shown,
         label: r.label,
@@ -1015,19 +1018,39 @@ export const register: Register = (on, options) => {
       )
     }
 
+    // Fixed columns, as on the board, so rows line up and don't shift as counts change.
+    const shortName = (repo: string) => repo.split('/')[1] ?? repo
+    const repoWidth = Math.min(14, Math.max(0, ...rows.map(row => shortName(row.repo).length)))
+    const labelWidth = Math.min(14, Math.max(...rows.map(row => row.label.length)))
+    const countWidth = Math.max(...rows.map(row => `${row.t.pass}/${row.t.total}`.length))
     return (
       <Box flexDirection="column">
         {rows.map((row, i) => (
           <Box key={`band-${row.key}`} justifyContent="space-between">
             <Box gap={2}>
               <Box gap={1}>
-                <Text color={tone(row.state)}>{glyph(row.state, f)}</Text>
-                {row.url ? <Link href={row.url} label={row.label} /> : <Text>{row.label}</Text>}
+                <Box width={1} flexShrink={0}>
+                  <Text color={tone(row.state)}>{glyph(row.state, f)}</Text>
+                </Box>
+                {repoWidth > 0 && (
+                  <Box width={repoWidth} flexShrink={0}>
+                    <Text dimColor wrap="truncate">
+                      {clip(shortName(row.repo), repoWidth)}
+                    </Text>
+                  </Box>
+                )}
+                <Box width={labelWidth} flexShrink={0}>
+                  {row.url ? <Link href={row.url} label={clip(row.label, labelWidth)} /> : <Text wrap="truncate">{clip(row.label, labelWidth)}</Text>}
+                </Box>
               </Box>
-              {Bar({ t: row.t, width: BAND_BAR })}
-              <Text>
-                {row.t.pass}/{row.t.total}
-              </Text>
+              <Box width={BAND_BAR} flexShrink={0}>
+                {Bar({ t: row.t, width: BAND_BAR })}
+              </Box>
+              <Box width={countWidth} flexShrink={0} justifyContent="flex-end">
+                <Text>
+                  {row.t.pass}/{row.t.total}
+                </Text>
+              </Box>
               {row.isParty ? (
                 <Text color="magenta" bold>
                   {sparkle} {row.state === 'merged' ? 'merged' : 'released'} {sparkle}

@@ -788,3 +788,11 @@ export function isStale(pr: Pr, now: number, afterMs: number): boolean {
   const ended = Date.parse(pr.endedAt ?? '')
   return pr.state !== 'OPEN' && Number.isFinite(ended) && now - ended > afterMs
 }
+
+// Replace a matching item where it stands, or append a new one; keeps at most `max`.
+// Moving updated items to the end would reshuffle every list on each poll.
+export function upsertBy<T>(list: readonly T[], item: T, isSame: (one: T) => boolean, max: number): T[] {
+  const at = list.findIndex(isSame)
+  const next = at === -1 ? [...list, item] : list.map((one, i) => (i === at ? item : one))
+  return next.slice(-max)
+}

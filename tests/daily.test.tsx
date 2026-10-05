@@ -1,7 +1,7 @@
 import type { RenderPropsOf } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 
-import { ciContext, clip, isFinished, isStale, nextRow, scrollWindow } from '../hooks/lib'
+import { ciContext, clip, isFinished, isStale, nextRow, scrollWindow, upsertBy } from '../hooks/lib'
 import type { Pr } from '../types'
 
 const PR_URL = 'https://github.com/acme/rocket/pull/482'
@@ -281,4 +281,10 @@ test('d clears merged PRs and finished releases; merged PRs also age out', async
   expect(isStale(merged, Date.parse('2026-10-04T10:05:00Z'), 10 * 60_000)).toBe(false)
   expect(isStale(merged, Date.parse('2026-10-04T10:11:00Z'), 10 * 60_000)).toBe(true)
   expect(isStale({ state: 'OPEN', checks: [] } as never, Date.now(), 0)).toBe(false)
+})
+
+test('upsertBy updates in place, so polling never reorders the lists', () => {
+  const list = [{ id: 1, v: 'a' }, { id: 2, v: 'b' }, { id: 3, v: 'c' }]
+  expect(upsertBy(list, { id: 1, v: 'A' }, one => one.id === 1, 5).map(one => one.v)).toEqual(['A', 'b', 'c'])
+  expect(upsertBy(list, { id: 4, v: 'd' }, one => one.id === 4, 3).map(one => one.id)).toEqual([2, 3, 4])
 })
