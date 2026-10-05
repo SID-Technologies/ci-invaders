@@ -240,8 +240,8 @@ test('board lists tracked items and your PRs, and tracks on press', async ($, on
   expect(await ui.find({ type: 'Link', text: '#484' })).toBeUndefined()
   expect(await ui.find({ type: 'Button', key: 'section:mine' })).toBeDefined()
   expect(await ui.find({ type: 'Button', key: `item:pr:${PR_URL}` })).toBeDefined()
-  // actions + help, gap, pull requests (4 + heading + scroll line), gap, Actions and your PRs stacked (3 + 2 each) and their gap
-  expect(opened.at(-1)?.rows).toBe(2 + 1 + 6 + 1 + 11)
+  // actions + help, gap, the PR panel (4 rows + heading + border), gap, Actions and your PRs stacked (3 + 3 each)
+  expect(opened.at(-1)?.rows).toBe(2 + 1 + 7 + 1 + 12)
 
   // Detail only: the open item, no lists; then back to both.
   await ui.press({ key: 'layout' })

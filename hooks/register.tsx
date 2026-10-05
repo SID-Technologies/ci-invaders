@@ -501,21 +501,26 @@ function orderOf(key: string): number {
   return firstAt >= 0 ? firstAt - 0.5 : rowKeys.length
 }
 
-const KEYS: readonly (readonly [string, string])[] = [
-  ['↑ ↓', 'move through the lists'],
-  ['1 2 3', 'jump to Pull requests, Actions, Your open PRs'],
-  ['pgup pgdn', 'scroll the board'],
-  ['enter', 'pin a row in the detail, or track one of yours'],
-  ['f', 'fix it: the failing logs into the prompt'],
-  ['e', 'rerun the failed jobs'],
-  ['l  y', 'next failing log · copy the log shown'],
-  ['a', 'review with Claude (a PR you didn\'t open)'],
-  ['o', 'open on GitHub'],
-  ['x  d', 'remove the highlighted row · clear finished'],
-  ['c  z', 'clear everything · undo any removal'],
-  ['r', 'refresh now'],
-  ['m', 'list and detail, list only, detail only'],
-  ['esc', 'back to the prompt'],
+// The h panel, in two columns.
+const KEYS: readonly (readonly (readonly [string, string])[])[] = [
+  [
+    ['↑ ↓', 'move'],
+    ['enter', 'pin a row, or track one of yours'],
+    ['1 2 3', 'jump to a list'],
+    ['pgup pgdn', 'scroll the board'],
+    ['m', 'lists / detail layout'],
+    ['esc', 'back to the prompt'],
+  ],
+  [
+    ['f', 'fix it with Claude'],
+    ['e', 'rerun failed jobs'],
+    ['l / y', 'next log / copy log'],
+    ['a', 'review with Claude'],
+    ['o', 'open on GitHub'],
+    ['x / d', 'remove row / clear finished'],
+    ['c / z', 'clear all / undo'],
+    ['r', 'refresh'],
+  ],
 ]
 
 // Shows `label` in place of the help line until `work` finishes.
@@ -595,11 +600,11 @@ async function clearAll($: $): Promise<void> {
   await persistTracking($)
 }
 
-// Each list is a heading, its rows and a scroll line; one row of gap between blocks.
+// Actions and help, then each list's panel (border, heading, rows), a row apart.
 function listOnlyRows(): number {
   const { prRows, sideRows, isSideBySide } = boardShape
-  const side = isSideBySide ? sideRows + 2 : 2 * (sideRows + 2) + 1
-  return 2 + 1 + (prRows + 2) + 1 + side
+  const side = isSideBySide ? sideRows + 3 : 2 * (sideRows + 3)
+  return 2 + 1 + (prRows + 3) + 1 + side
 }
 
 async function openBoard($: $) {
@@ -1322,7 +1327,7 @@ export const register: Register = (on, options) => {
                     <Box>
                       {[...row.past!.results].reverse().map((result, i) => (
                         <Text key={`h-${i}`} color={tone(result)} dimColor={result === 'skip'}>
-                          ■
+                          ⣿
                         </Text>
                       ))}
                     </Box>
@@ -1446,49 +1451,60 @@ export const register: Register = (on, options) => {
     const counts = [...items.map(item => item.t), ...mine.prs.map(pr => tally(pr.checks))].map(t => `${t.pass}/${t.total}`.length)
     const countWidth = Math.max(3, ...counts)
 
-    const ListRow = ({ key, marker, state, repo, repoWidth, label, title, t, isOpen, buttonKey, onPress }: {
+    const BAR_CELLS = 6
+    // Every column has a fixed width, the title included (whatever the row has
+    // left), so nothing a terminal draws wider than expected can shift the rest.
+    const ListRow = ({ key, width, marker, state, repo, label, title, t, isOpen, buttonKey, onPress }: {
       key: string
+      width: number
       marker: string
       state: Shown
       repo: string
-      repoWidth: number
       label: string
       title: string
-      t?: Tally
+      t: Tally
       isOpen: boolean
       buttonKey: string
       onPress: () => unknown
-    }) => (
-      <Box key={key} gap={1} {...(isOpen || cursorKey === buttonKey ? { backgroundColor: 'userMessageBackground' } : {})}>
-        <Text color="cyan" dimColor={!isOpen}>
-          {marker}
-        </Text>
-        <Text color={tone(state)}>{glyph(state, f)}</Text>
-        {repoWidth > 0 && (
-          <Box width={repoWidth} flexShrink={0}>
-            <Text dimColor wrap="truncate-end">
-              {repo}
+    }) => {
+      const columns = [1, 1, repoWidth, labelWidth, BAR_CELLS, countWidth].filter(w => w > 0)
+      const titleWidth = Math.max(4, width - columns.reduce((sum, w) => sum + w, 0) - columns.length)
+      return (
+        <Box key={key} gap={1} {...(isOpen || cursorKey === buttonKey ? { backgroundColor: 'userMessageBackground' } : {})}>
+          <Box width={1} flexShrink={0}>
+            <Text color="cyan" dimColor={!isOpen}>
+              {marker}
             </Text>
           </Box>
-        )}
-        <Box width={labelWidth} flexShrink={0}>
-          <Button key={buttonKey} plain dimColor={!isOpen} label={clip(label, labelWidth)} onPress={onPress} />
-        </Box>
-        <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden">
-          <Text bold={isOpen} dimColor={!isOpen} wrap="truncate-end">
-            {title}
-          </Text>
-        </Box>
-        {t && Bar({ t, width: 6 })}
-        {t && (
+          <Box width={1} flexShrink={0}>
+            <Text color={tone(state)}>{glyph(state, f)}</Text>
+          </Box>
+          {repoWidth > 0 && (
+            <Box width={repoWidth} flexShrink={0}>
+              <Text dimColor wrap="truncate">
+                {clip(repo, repoWidth)}
+              </Text>
+            </Box>
+          )}
+          <Box width={labelWidth} flexShrink={0}>
+            <Button key={buttonKey} plain dimColor={!isOpen} label={clip(label, labelWidth)} onPress={onPress} />
+          </Box>
+          <Box width={titleWidth} flexShrink={0} overflow="hidden">
+            <Text bold={isOpen} dimColor={!isOpen} wrap="truncate">
+              {clip(title, titleWidth)}
+            </Text>
+          </Box>
+          <Box width={BAR_CELLS} flexShrink={0}>
+            {Bar({ t, width: BAR_CELLS })}
+          </Box>
           <Box width={countWidth} flexShrink={0} justifyContent="flex-end">
             <Text dimColor>
               {t.pass}/{t.total}
             </Text>
           </Box>
-        )}
-      </Box>
-    )
+        </Box>
+      )
+    }
 
     const tracked = new Set(prList.map(pr => pr.url))
     const trackAndOpen = async (url: string) => {
@@ -1524,14 +1540,14 @@ export const register: Register = (on, options) => {
         plain
         dimColor={id !== active}
         hotkey={String(Object.keys(sections).indexOf(id) + 1)}
-        label={`${label}${where(id)}`}
+        label={label}
         onPress={() => jumpToSection($, id)}
       />
     )
 
-    // A fixed-height list: heading, `size` lines scrolled to keep the cursor in
-    // view, and a line saying what's above and below.
-    type Line = { key: string; draw: () => RenderChildren }
+    // A list panel of fixed height: a border (lit when active), the heading with
+    // where you are and what's scrolled out of view, and `size` rows.
+    type Line = { key: string; draw: (width: number) => RenderChildren }
     const ListBlock = ({ id, label, lines, size, empty, width }: { id: Section; label: string; lines: Line[]; size: number; empty: string; width?: number }) => {
       const at = lines.findIndex(line => line.key !== '' && line.key === focusIn(id))
       const first = scrollWindow(windowStarts.get(id) ?? 0, at, lines.length, size)
@@ -1540,33 +1556,39 @@ export const register: Register = (on, options) => {
       for (const line of visible) if (line.key) drawnRows.add(line.key)
       const above = lines.slice(0, first).filter(line => line.key).length
       const below = lines.slice(first + size).filter(line => line.key).length
-      const more = [above > 0 && `↑ ${above} above`, below > 0 && `↓ ${below} below`].filter(Boolean).join(' · ')
+      const more = [above > 0 && `↑${above}`, below > 0 && `↓${below}`].filter(Boolean).join(' ')
       return (
-        <Box key={`list-${id}`} flexDirection="column" height={size + 2} minWidth={0} {...(width ? { width, flexShrink: 0 } : { flexGrow: 1 })}>
-          {Heading({ id, label })}
+        <Box
+          key={`list-${id}`}
+          flexDirection="column"
+          height={size + 3}
+          minWidth={0}
+          borderStyle="round"
+          paddingX={1}
+          {...(id === active ? { borderColor: 'cyan' } : { borderDimColor: true })}
+          {...(width ? { width, flexShrink: 0 } : { flexGrow: 1 })}
+        >
+          {Heading({ id, label: more ? `${label}${where(id)}  ${more}` : `${label}${where(id)}` })}
           <Box flexDirection="column" height={size}>
-            {visible.length > 0 ? visible.map(line => line.draw()) : <Text dimColor wrap="truncate-end">{empty}</Text>}
+            {visible.length > 0 ? visible.map(line => line.draw((width ?? inner) - 4)) : <Text dimColor wrap="truncate-end">{empty}</Text>}
           </Box>
-          <Text dimColor wrap="truncate-end">
-            {more || ' '}
-          </Text>
         </Box>
       )
     }
 
     const trackedLine = (item: (typeof items)[number]): Line => ({
       key: `${ITEM}${item.key}`,
-      draw: () =>
+      draw: width =>
         ListRow({
           key: `row-${item.key}`,
+          width,
           state: item.state,
           repo: shortRepo('pr' in item ? item.pr.repo : (item.release.repo ?? '')),
-          repoWidth,
           label: item.label,
           title: item.title,
           t: item.t,
           isOpen: item.key === openKey,
-          marker: item.key === openKey ? '▌' : ' ',
+          marker: item.key === openKey ? '>' : ' ',
           buttonKey: `${ITEM}${item.key}`,
           onPress: () => openItem($, item.key),
         }),
@@ -1575,12 +1597,12 @@ export const register: Register = (on, options) => {
     const mineRepo = mine.repo ? shortRepo(mine.repo) : ''
     const mineLines: Line[] = untracked.map(pr => ({
       key: `${ADD}${pr.url}`,
-      draw: () =>
+      draw: width =>
         ListRow({
           key: `mine-${pr.url}`,
+          width,
           state: pr.checks.length === 0 ? 'skip' : overall(pr.checks),
           repo: mineRepo,
-          repoWidth,
           label: `#${pr.number}`,
           title: pr.isDraft ? `${pr.title} (draft)` : pr.title,
           t: tally(pr.checks),
@@ -1601,8 +1623,9 @@ export const register: Register = (on, options) => {
     const removable = isTrackedRow ? cursorKey.slice(ITEM.length) : openKey
     const finishedCount = [...prList, ...releaseList].filter(isFinished).length
 
-    // Side by side, each list gets exactly half, or the busier one crowds the other out.
-    const halfWidth = boardShape.isSideBySide ? Math.floor((inner - 3) / 2) : undefined
+    // Side by side, each list gets a fixed half, or the busier one crowds the other out.
+    const leftWidth = boardShape.isSideBySide ? Math.floor((inner - 1) / 2) : undefined
+    const rightWidth = leftWidth === undefined ? undefined : inner - 1 - leftWidth
     const prBlock = ListBlock({
       id: 'prs',
       label: 'PULL REQUESTS',
@@ -1615,7 +1638,7 @@ export const register: Register = (on, options) => {
       label: 'ACTIONS',
       lines: actionItems.map(trackedLine),
       size: boardShape.sideRows,
-      width: halfWidth,
+      width: leftWidth,
       empty: 'None tracked. /pulse-release, or a release Claude creates.',
     })
     const mineBlock = ListBlock({
@@ -1623,7 +1646,7 @@ export const register: Register = (on, options) => {
       label: 'YOUR OPEN PRS',
       lines: mineLines,
       size: boardShape.sideRows,
-      width: halfWidth,
+      width: rightWidth,
       empty: mine.error ?? (mine.prs.length > 0 ? 'All tracked.' : 'None open.'),
     })
 
@@ -1684,15 +1707,19 @@ export const register: Register = (on, options) => {
         </Box>
 
         {isShowingKeys && (
-          <Box key="keys-list" flexDirection="column">
-            {KEYS.map(([keys, does]) => (
-              <Box key={`key-${keys}`} gap={1}>
-                <Box width={10} flexShrink={0}>
-                  <Text color="cyan">{keys}</Text>
-                </Box>
-                <Text dimColor wrap="truncate-end">
-                  {does}
-                </Text>
+          <Box key="keys-panel" borderStyle="round" borderDimColor paddingX={1} gap={4}>
+            {KEYS.map((group, column) => (
+              <Box key={`keys-${column}`} flexDirection="column">
+                {group.map(([keys, does]) => (
+                  <Box key={`key-${keys}`} gap={1}>
+                    <Box width={9} flexShrink={0}>
+                      <Text color="cyan">{keys}</Text>
+                    </Box>
+                    <Text dimColor wrap="truncate">
+                      {does}
+                    </Text>
+                  </Box>
+                ))}
               </Box>
             ))}
           </Box>
@@ -1702,12 +1729,12 @@ export const register: Register = (on, options) => {
         {isListShown && prBlock}
         {isListShown &&
           (boardShape.isSideBySide ? (
-            <Box key="side-lists" gap={3}>
+            <Box key="side-lists" gap={1}>
               {actionBlock}
               {mineBlock}
             </Box>
           ) : (
-            <Box key="side-lists" flexDirection="column" gap={1}>
+            <Box key="side-lists" flexDirection="column">
               {actionBlock}
               {mineBlock}
             </Box>

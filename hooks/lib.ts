@@ -301,7 +301,7 @@ export function glyph(state: Shown, frame = 0): string {
     case 'fail':
       return '✕'
     case 'skip':
-      return '–'
+      return '-'
     // ● and ○ draw two cells wide in some terminals, which breaks alignment.
     case 'merged':
       return '✓'
@@ -771,9 +771,11 @@ export function scrollWindow(start: number, at: number, total: number, size: num
   return next
 }
 
+// Cut to `width` cells ending in "...". ASCII on purpose: some terminals draw … two cells wide.
 export function clip(text: string, width: number): string {
   if (width < 1) return ''
-  return text.length <= width ? text : `${text.slice(0, Math.max(0, width - 1))}…`
+  if (text.length <= width) return text
+  return width <= 3 ? text.slice(0, width) : `${text.slice(0, width - 3)}...`
 }
 
 // Merged or closed PRs, and releases that finished without failing.
