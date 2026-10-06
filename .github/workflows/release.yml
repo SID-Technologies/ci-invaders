@@ -1,0 +1,50 @@
+name: Release
+
+# Bump "version" in .claude-plugin/plugin.json and marketplace.json, merge to
+# main, and this tags gh-pulse--v<version> and publishes a GitHub release.
+on:
+  push:
+    branches: [main]
+    paths: ['.claude-plugin/**']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency: release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install -g @anthropic-ai/claude-code
+      - run: claude plugin validate . --strict
+      - run: claude plugin test .
+
+      - id: version
+        run: |
+          version=$(jq -r .version .claude-plugin/plugin.json)
+          tag="gh-pulse--v$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/$tag" > /dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "$tag already exists, nothing to release"
+          fi
+
+      - if: steps.version.outputs.exists != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          claude plugin tag --push -m "gh-pulse v%s"
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --title "gh-pulse v${{ steps.version.outputs.version }}" \
+            --generate-notes
