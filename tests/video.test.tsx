@@ -51,7 +51,7 @@ const pane = (focused = true) =>
 
 // ── Pixels ──────────────────────────────────────────────────────────────
 
-test('pixels pack two rows a cell, transparent where nothing is drawn', async () => {
+test('toCells packs two pixel rows per cell', async () => {
   const p = blank(2, 2)
   set(p, 0, 0, 0xff0000) // top only
   set(p, 1, 1, 0x00ff00) // bottom only
@@ -62,7 +62,7 @@ test('pixels pack two rows a cell, transparent where nothing is drawn', async ()
   expect(toCells(blank(3, 3)).rows).toBe(2) // odd heights round up
 })
 
-test('confetti bursts up, falls back, and is the same every time', async () => {
+test('confetti is deterministic and falls back down', async () => {
   const lit = (f: number) => confettiFrame(7, f, 40, 12).data.filter(c => c !== NONE).length
   expect(lit(0)).toBeGreaterThan(0)
   expect(confettiFrame(7, 10, 40, 12)).toEqual(confettiFrame(7, 10, 40, 12))
@@ -70,7 +70,7 @@ test('confetti bursts up, falls back, and is the same every time', async () => {
   expect(lit(CONFETTI_FRAMES)).toBe(0)
 })
 
-test('space invaders: running jobs march, passed ones burst, a failure lands and takes the ship', async () => {
+test('invaders march, burst, fall, and end on YOU WIN or GAME OVER', async () => {
   const lit = (p: { data: number[] }) => p.data.filter(c => c !== NONE).length
   const running = invadersFrame({ invaders: [{ state: 'pending' }, { state: 'pending' }], frame: 0 })
   expect(invadersFrame({ invaders: [{ state: 'pending' }, { state: 'pending' }], frame: 30 })).not.toEqual(running) // marching, stars falling
@@ -96,7 +96,7 @@ test('space invaders: running jobs march, passed ones burst, a failure lands and
   expect(toCells(invadersFrame({ invaders: [{ state: 'pending' }], frame: 0, width: 100 })).columns).toBe(100) // as wide as the board
 })
 
-test('space invaders: jobs that join later keep everyone in place, and the ship hunts at random', async () => {
+test('invaders keep their slots as jobs join; the ship picks random targets', async () => {
   // A planned job GitHub now names takes its place quietly; a matrix job's extra half and a new job fly in.
   const first = placeInvaders(new Map(), [{ key: 'a', state: 'pending' }, { key: 'plan', state: 'pending' }], 0)
   const later = placeInvaders(first, [{ key: 'a', state: 'pending' }, { key: 'm1', state: 'pending' }, { key: 'm2', state: 'pending' }], 30)
@@ -126,7 +126,7 @@ test('space invaders: jobs that join later keep everyone in place, and the ship 
 
 // ── Fix it ──────────────────────────────────────────────────────────────
 
-test('check URLs, failed logs and the fix prompt', async () => {
+test('parseActionsUrl, cleanLog and fixPrompt', async () => {
   expect(parseActionsUrl(JOB_URL)).toEqual({ runId: '77', jobId: '2' })
   expect(parseActionsUrl('https://codecov.io/x')).toBeUndefined()
 
@@ -150,7 +150,7 @@ test('check URLs, failed logs and the fix prompt', async () => {
   expect(text).toContain('branch `warp-drive`')
 })
 
-test('f puts the failing log in the prompt box', async ($, on) => {
+test('f fills the prompt with the failing log', async ($, on) => {
   const filled: string[] = []
   on('process.run', async (_$, e) => {
     const argv = e.argv.map(String)
@@ -173,7 +173,7 @@ test('f puts the failing log in the prompt box', async ($, on) => {
 
 // ── Celebrations ────────────────────────────────────────────────────────
 
-test('a merge sets off confetti on the board', async ($, on) => {
+test('merge shows confetti', async ($, on) => {
   let state = 'OPEN'
   on('process.run', async (_$, e) => ok(e.argv[1] === 'pr' ? prJson(state, 'SUCCESS') : ''))
 
@@ -187,7 +187,7 @@ test('a merge sets off confetti on the board', async ($, on) => {
   await ui.unmount()
 })
 
-test('confetti stays off when the setting is off', { options: { confetti: false } }, async ($, on) => {
+test('confetti off shows none', { options: { confetti: false } }, async ($, on) => {
   let state = 'OPEN'
   on('process.run', async (_$, e) => ok(e.argv[1] === 'pr' ? prJson(state, 'SUCCESS') : ''))
   await $.command.run({ command: 'pulse-pr', args: PR_URL } as never)
@@ -198,9 +198,12 @@ test('confetti stays off when the setting is off', { options: { confetti: false 
   await ui.unmount()
 })
 
-test('a tracked release plays space invaders', async ($, on) => {
+test('release detail draws invaders', async ($, on) => {
+  const ran: string[][] = []
   on('process.run', async (_$, e) => {
     const argv = e.argv.map(String)
+    ran.push(argv)
+    if (argv[1] === 'repo') return ok(JSON.stringify({ nameWithOwner: 'acme/rocket' }))
     if (argv[1] === 'release') return ok(JSON.stringify({ tagName: 'v1.0.0', url: 'https://github.com/acme/rocket/releases/tag/v1.0.0' }))
     if (argv[1] === 'run' && argv[2] === 'list') {
       return ok(JSON.stringify([{ databaseId: 9, workflowName: 'release', displayTitle: 'v1.0.0', url: 'https://github.com/acme/rocket/actions/runs/9', status: 'IN_PROGRESS', conclusion: '', headBranch: 'v1.0.0' }]))
@@ -211,10 +214,15 @@ test('a tracked release plays space invaders', async ($, on) => {
   await $.command.run({ command: 'pulse-release', args: 'v1.0.0' } as never)
   const ui = await $.ui.mount(pane())
   expect(await ui.find({ type: 'Raster', key: 'invaders' })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'section:actions', text: /^ACTIONS · 1/ })).toBeDefined() // listed under Actions, not Pull requests
+  expect(await ui.find({ type: 'Button', key: 'section:prs', text: /^PULL REQUESTS$/ })).toBeDefined()
+  // The release remembers its repo, so it can be followed from any directory.
+  expect(ran.some(argv => argv[1] === 'run' && argv[2] === 'list' && argv.join(' ').includes('-R acme/rocket'))).toBe(true)
+  expect(await ui.find({ type: 'Text', text: 'rocket' })).toBeDefined()
   await ui.unmount()
 })
 
-test('a finished release that gets re-run goes back to running', async ($, on) => {
+test('re-run of a finished release shows as running', async ($, on) => {
   let status = 'COMPLETED'
   let attempt = 1
   const viewed: number[] = []
@@ -243,7 +251,7 @@ test('a finished release that gets re-run goes back to running', async ($, on) =
   await ui.unmount()
 })
 
-test('jobs waiting on others count before GitHub lists them', async () => {
+test('waiting jobs are counted before GitHub lists them', async () => {
   const yaml = [
     'name: release',
     'on: push',

@@ -1,59 +1,64 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, Timer } from 'claude-code'
+import type { EngineInterface, Register, RenderChildren, Timer } from 'claude-code'
 
-import type { Celebration, History, Logs, OpenPrs, Pr, Release, ReviewRequests, Run, Setup } from '../types'
+import type { Celebration, History, Logs, OpenPrs, Pr, Release, Run, Setup, Undo } from '../types'
 import {
+  FRAME_MS,
   PR_URL,
   RELEASE_URL,
-  FRAME_MS,
+  SOUND_FOR,
   SPINNER_EVERY,
   byUrgency,
-  SOUND_FOR,
-  isFlaky,
-  isPlainLogin,
-  parseHistory,
-  reviewerGlyph,
-  spoken,
-  ciContext,
-  parseReviewRequests,
-  reviewPrompt,
-  cleanLog,
-  fixPrompt,
-  parseActionsUrl,
-  prTransition,
-  readSettings,
-  releaseTransition,
   cells,
+  ciContext,
+  cleanLog,
+  clip,
   duration,
+  fixPrompt,
   glyph,
+  isFinished,
+  isFlaky,
   isLive,
-  overall,
-  isReleaseRunning,
+  isPlainLogin,
   isPrCreate,
   isReleaseCreate,
+  isReleaseRunning,
+  isStale,
   mergeLabel,
+  nextRow,
+  overall,
+  parseActionsUrl,
+  parseHistory,
   parseJobs,
-  plannedJobs,
-  withWaitingJobs,
   parseOpenPrs,
   parsePr,
   parseRuns,
+  plannedJobs,
   prState,
   prToast,
+  prTransition,
+  readSettings,
   releaseInvaders,
   releaseItems,
   releaseState,
   releaseToast,
+  releaseTransition,
   reviewLabel,
+  reviewPrompt,
+  reviewerGlyph,
+  scrollWindow,
   segments,
   setupAdvice,
   setupText,
+  spoken,
   statusLine,
   summary,
   tally,
   tone,
   trouble,
+  upsertBy,
   verdict,
+  withWaitingJobs,
   workflowRun,
 } from './lib'
 import type { Failure, PlannedJob, Settings, Shown, Tally, Transition } from './lib'
@@ -72,62 +77,75 @@ import {
 
 type $ = EngineInterface
 
-const PLUGIN = 'gh-pulse'
 const PANE = 'gh-pulse'
+const TITLE = 'gh-pulse'
+const STORE_KEY = 'tracked'
+
 const POLL_MS = 15_000
+const OPEN_PRS_EVERY = 4 // polls between refreshes of your PRs and review requests
+const RESEAT_MS = 80 // long enough for the board to redraw
+const UNDO_MS = 10_000
+const HISTORY_TTL_MS = 5 * 60_000
+const AUTO_CLEAR_MS = 10 * 60_000 // merged or closed PRs drop off after this
+
 const MAX_PRS = 5
 const MAX_RELEASES = 3
-const TITLE = 'gh-pulse'
-const BAND_BAR = 10
+const MAX_OPEN_PRS = 15
 const MAX_CHECKS = 8
 const MAX_JOBS = 5
-const WORKFLOW_COLUMN = 16
+const HISTORY_RUNS = 20
+const LOG_PREVIEW = 15
+
+const BAND_BAR = 10
 const TIME_COLUMN = 8
+
+const PR_FIELDS =
+  'number,title,url,state,isDraft,reviewDecision,mergeable,statusCheckRollup,headRefName,baseRefName,latestReviews,reviewRequests,mergedAt,closedAt,author'
+const OPEN_PR_FIELDS = 'number,title,url,isDraft,statusCheckRollup'
+const RUN_FIELDS = 'databaseId,name,workflowName,displayTitle,url,status,conclusion,headBranch,startedAt,updatedAt,attempt'
+
+// Board elements are keyed by prefix: tracked rows, your PRs, section headings.
+const ITEM = 'item:'
+const ADD = 'add:'
+const SECTION = 'section:'
+
+const prKey = (pr: Pr) => `pr:${pr.url}`
+const releaseKey = (r: Release) => `release:${r.key}`
+
+const CELEBRATION_FRAMES: Record<Celebration['kind'], number> = {
+  merged: CONFETTI_FRAMES,
+  released: 40,
+  scrubbed: LOSS_FRAMES + 4,
+}
+
+type Layout = 'both' | 'list' | 'detail'
+const NEXT_LAYOUT = { both: 'list', list: 'detail', detail: 'both' } as const
+const LAYOUT_LABEL = { both: 'List and detail', list: 'List only', detail: 'Detail only' } as const
 
 const prs = atom({ plugin: 'gh-pulse', key: 'prs' } as const, [])
 const releases = atom({ plugin: 'gh-pulse', key: 'releases' } as const, [])
 const frame = atom({ plugin: 'gh-pulse', key: 'frame' } as const, 0)
 const isBandHidden = atom({ plugin: 'gh-pulse', key: 'isBandHidden' } as const, false)
 const selected = atom({ plugin: 'gh-pulse', key: 'selected' } as const, '')
-const isMinimized = atom({ plugin: 'gh-pulse', key: 'isMinimized' } as const, false)
+const layout = atom({ plugin: 'gh-pulse', key: 'layout' } as const, 'both' as Layout)
 const setup = atom({ plugin: 'gh-pulse', key: 'setup' } as const, { gh: 'unknown', os: 'unknown' } as Setup)
 const celebration = atom({ plugin: 'gh-pulse', key: 'celebration' } as const, null as Celebration | null)
+const undo = atom({ plugin: 'gh-pulse', key: 'undo' } as const, null as Undo | null)
+const cursor = atom({ plugin: 'gh-pulse', key: 'cursor' } as const, '')
+const busy = atom({ plugin: 'gh-pulse', key: 'busy' } as const, '')
+const isKeysShown = atom({ plugin: 'gh-pulse', key: 'isKeysShown' } as const, false)
 const logs = atom({ plugin: 'gh-pulse', key: 'logs' } as const, {} as Logs)
-const reviewRequests = atom({ plugin: 'gh-pulse', key: 'reviewRequests' } as const, { prs: [] } as ReviewRequests)
+const viewer = atom({ plugin: 'gh-pulse', key: 'viewer' } as const, '')
 const logCheck = atom({ plugin: 'gh-pulse', key: 'logCheck' } as const, '')
 const history = atom({ plugin: 'gh-pulse', key: 'history' } as const, {} as Record<string, History>)
 const avatars = atom({ plugin: 'gh-pulse', key: 'avatars' } as const, {} as Record<string, string>)
 const openPrs = atom({ plugin: 'gh-pulse', key: 'openPrs' } as const, { repo: '', prs: [] } as OpenPrs)
 
-const OPEN_PR_FIELDS = 'number,title,url,isDraft,statusCheckRollup'
-/** Your open PRs are listed every this many polls (and on open and refresh). */
-const OPEN_PRS_EVERY = 4
-const MAX_OPEN_PRS = 15
-/** Log lines the board shows under a failing check (the fix prompt takes more). */
-const LOG_PREVIEW = 15
-const STORE_KEY = 'tracked'
-/** How long after opening an item the ring is put back on its row: past one redraw. */
-const RESEAT_MS = 80
-/** The manifest's userConfig, read when the module (re)loads. */
+// Module state. Reset when the module reloads; $.state and $.store survive that.
 let settings: Settings = readSettings(undefined)
-/** Frames a celebration keeps the clock running. */
-const CELEBRATION_FRAMES: Record<Celebration['kind'], number> = {
-  merged: CONFETTI_FRAMES,
-  released: 40,
-  scrubbed: LOSS_FRAMES + 4,
-}
-/** The frame each Actions job was seen to finish on, by `<release key>|<job key>`: when its invader goes. */
-const doneAt = new Map<string, number>()
-/** Each release's invaders: where each job sits in the formation, and when it arrived. */
+const doneAt = new Map<string, number>() // `${release key}|${job key}` -> frame the job finished
 const fleets = new Map<string, ReturnType<typeof placeInvaders>>()
-/** Each release's ship, which carries on from frame to frame. */
 const ships = new Map<string, Ship>()
-const PR_FIELDS =
-  'number,title,url,state,isDraft,reviewDecision,mergeable,statusCheckRollup,headRefName,baseRefName,latestReviews,reviewRequests'
-/** CI history is fetched again after this long. */
-const HISTORY_TTL_MS = 5 * 60_000
-const HISTORY_RUNS = 20
-const RUN_FIELDS = 'databaseId,name,workflowName,displayTitle,url,status,conclusion,headBranch,startedAt,updatedAt,attempt'
 
 // ── gh ──────────────────────────────────────────────────────────────────
 
@@ -150,70 +168,85 @@ async function fetchPr($: $, ref: string): Promise<Pr> {
   return parsePr(await gh($, args))
 }
 
-/** The jobs each run's workflow file declares, by run id: the file at that commit never changes. */
+// By run id. A run's workflow file is fixed at its commit, so this never goes stale.
 const plans = new Map<number, PlannedJob[]>()
 
-/** The workflow file the run was started from, at its commit, read for the jobs it declares. */
-async function planFor($: $, run: Run): Promise<PlannedJob[]> {
+async function planFor($: $, run: Run, repo = '{owner}/{repo}'): Promise<PlannedJob[]> {
   const known = plans.get(run.id)
   if (known) return known
   let planned: PlannedJob[] = []
   try {
     const [path = '', sha = ''] = (
-      await gh($, ['api', `repos/{owner}/{repo}/actions/runs/${run.id}`, '--jq', '.path + "\n" + .head_sha'])
+      await gh($, ['api', `repos/${repo}/actions/runs/${run.id}`, '--jq', '.path + "\n" + .head_sha'])
     ).trim().split('\n')
     const file = path.split('@')[0] ?? ''
     if (file.startsWith('.github/workflows/') && sha) {
       planned = plannedJobs(
-        await gh($, ['api', '-H', 'Accept: application/vnd.github.raw', `repos/{owner}/{repo}/contents/${file}?ref=${sha}`]),
+        await gh($, ['api', '-H', 'Accept: application/vnd.github.raw', `repos/${repo}/contents/${file}?ref=${sha}`]),
       )
     }
   } catch {
-    // No plan: we show the jobs GitHub has started, as before.
+    // Fall back to the jobs GitHub lists.
   }
   plans.set(run.id, planned)
   return planned
 }
 
-async function withJobs($: $, run: Run, previous?: Run): Promise<Run> {
-  // A run that had already finished, and hasn't been re-run since, keeps the jobs we have.
+async function withJobs($: $, run: Run, previous: Run | undefined, repo: string | undefined): Promise<Run> {
+  // Finished and not re-run since: the jobs can't have changed.
   const isSameFinish = previous?.state !== 'pending' && previous?.attempt === run.attempt
   if (run.state !== 'pending' && previous && isSameFinish && previous.jobs.length > 0) {
     return { ...run, jobs: previous.jobs }
   }
   try {
-    const jobs = parseJobs(await gh($, ['run', 'view', String(run.id), '--json', 'jobs']))
-    // Jobs waiting on others aren't listed until they start: count them from the workflow file.
-    return { ...run, jobs: withWaitingJobs(jobs, run.state === 'pending' ? await planFor($, run) : [], run.state === 'pending') }
+    const jobs = parseJobs(await gh($, ['run', 'view', String(run.id), '--json', 'jobs', ...inRepo(repo)]))
+    // GitHub only lists a job once it starts; add the ones still waiting on `needs`.
+    return { ...run, jobs: withWaitingJobs(jobs, run.state === 'pending' ? await planFor($, run, repo) : [], run.state === 'pending') }
   } catch {
     return { ...run, jobs: previous?.jobs ?? [] }
   }
 }
 
 async function fetchRelease($: $, release: Release): Promise<Release> {
-  const args = ['run', 'list', '--json', RUN_FIELDS]
+  const args = ['run', 'list', '--json', RUN_FIELDS, ...inRepo(release.repo)]
   if (release.workflow) args.push('--workflow', release.workflow, '--limit', '1')
   else if (release.tag) args.push('--branch', release.tag, '--limit', '10')
   else args.push('--limit', '1')
 
   const found = parseRuns(await gh($, args))
   const runs = await Promise.all(
-    found.map(run => withJobs($, run, release.runs.find(old => old.id === run.id))),
+    found.map(run => withJobs($, run, release.runs.find(old => old.id === run.id), release.repo)),
   )
   return { ...release, runs, error: undefined }
 }
 
-/** A release from a tag, a workflow file, or (neither) the latest GitHub release. */
+// A tag, a workflow file, or (empty) the latest release.
 async function resolveRelease($: $, arg: string): Promise<Release> {
   const trimmed = arg.trim()
+  const repo = await currentRepo($)
   if (/\.ya?ml$/.test(trimmed)) {
-    return { key: `wf:${trimmed}`, label: trimmed.replace(/\.ya?ml$/, ''), workflow: trimmed, runs: [] }
+    return { key: `wf:${repo}:${trimmed}`, label: trimmed.replace(/\.ya?ml$/, ''), repo, workflow: trimmed, runs: [] }
   }
   const args = ['release', 'view', '--json', 'tagName,url']
   if (trimmed) args.splice(2, 0, trimmed)
   const raw = JSON.parse(await gh($, args)) as { tagName?: string; url?: string }
   const tag = raw.tagName ?? trimmed
-  return { key: `tag:${tag}`, label: tag, tag, url: raw.url, runs: [] }
+  return { key: `tag:${repo}:${tag}`, label: tag, repo, tag, url: raw.url, runs: [] }
+}
+
+// Releases and runs are looked up by repo; one tracked elsewhere must say which.
+function inRepo(repo: string | undefined): string[] {
+  return repo ? ['-R', repo] : []
+}
+
+async function currentRepo($: $): Promise<string | undefined> {
+  const known = (await read($, openPrs)).repo
+  if (known) return known
+  try {
+    return (JSON.parse(await gh($, ['repo', 'view', '--json', 'nameWithOwner'])) as { nameWithOwner?: string }).nameWithOwner
+  } catch {
+    return undefined
+  }
 }
 
 // ── Setup ───────────────────────────────────────────────────────────────
@@ -222,7 +255,7 @@ async function tryRun($: $, argv: string[]): Promise<{ exitCode: number; stdout:
   try {
     return await $.process.run(argv, { timeoutMs: 10_000 })
   } catch {
-    return undefined // not on PATH at all
+    return undefined // not installed
   }
 }
 
@@ -233,7 +266,6 @@ async function detectOs($: $): Promise<Setup['os']> {
   return uname === undefined ? 'windows' : 'unknown'
 }
 
-/** Is gh installed and logged in? Cheap: both are local checks. */
 async function checkGh($: $): Promise<boolean> {
   const version = await tryRun($, ['gh', '--version'])
   let state: Setup['gh'] = 'ready'
@@ -249,7 +281,6 @@ async function checkGh($: $): Promise<boolean> {
   return state === 'ready'
 }
 
-/** The setup message for a command to answer with, or undefined when gh is ready. */
 async function needsSetup($: $): Promise<string | undefined> {
   if (await checkGh($)) return undefined
   return setupText(await read($, setup))
@@ -264,7 +295,7 @@ async function refreshStatus($: $): Promise<void> {
 async function upsertPr($: $, next: Pr): Promise<void> {
   const before = (await read($, prs)).find(pr => pr.url === next.url)
   await update($, prs, list =>
-    [...list.filter(pr => pr.url !== next.url), next].slice(-MAX_PRS),
+    upsertBy(list, next, pr => pr.url === next.url, MAX_PRS),
   )
   const toast = prToast(before, next)
   if (toast) $.ui.toast(toast, { timeoutMs: 6000 })
@@ -288,7 +319,7 @@ async function upsertRelease($: $, next: Release): Promise<void> {
   }
   fleets.set(next.key, placeInvaders(fleets.get(next.key) ?? new Map(), releaseInvaders(next), now))
   await update($, releases, list =>
-    [...list.filter(r => r.key !== next.key), next].slice(-MAX_RELEASES),
+    upsertBy(list, next, r => r.key === next.key, MAX_RELEASES),
   )
   const toast = releaseToast(before, next)
   if (toast) $.ui.toast(toast, { timeoutMs: 8000 })
@@ -297,7 +328,6 @@ async function upsertRelease($: $, next: Release): Promise<void> {
   await persistTracking($)
 }
 
-/** Something just happened to a tracked item: play it, say it, celebrate it, as settings allow. */
 async function onTransition($: $, key: string, happened: Transition, label: string): Promise<void> {
   const sound = SOUND_FOR[happened]
   if (settings.sounds && sound) void $.audio.play({ asset: sound }).catch(() => undefined)
@@ -317,12 +347,12 @@ function isCelebrating(party: Celebration | null, now: number): party is Celebra
   return party !== null && now - party.startFrame < CELEBRATION_FRAMES[party.kind]
 }
 
-// ── Fix it: the failing logs, into the prompt box ───────────────────────
+// ── Fix it ──────────────────────────────────────────────────────────────
 
-async function fetchFailedLog($: $, jobId: string): Promise<string[]> {
+async function fetchFailedLog($: $, jobId: string, repo: string | undefined): Promise<string[]> {
   const cached = (await read($, logs))[jobId]
   if (cached) return cached.lines
-  const lines = cleanLog(await gh($, ['run', 'view', '--job', jobId, '--log-failed']))
+  const lines = cleanLog(await gh($, ['run', 'view', '--job', jobId, '--log-failed', ...inRepo(repo)]))
   await update($, logs, all => ({ ...all, [jobId]: { lines, at: Date.now() } }))
   return lines
 }
@@ -335,14 +365,13 @@ async function fixIt($: $, key: string, surface: string): Promise<void> {
     $.ui.toast(`PR #${pr.number} has nothing failing`)
     return
   }
-  $.ui.toast(`Fetching ${failing.length === 1 ? 'the failing log' : `${failing.length} failing logs`}…`, { timeoutMs: 3000 })
   const failures: Failure[] = await Promise.all(
     failing.map(async c => {
       const jobId = parseActionsUrl(c.url)?.jobId
       let log: string[] | undefined
       if (jobId) {
         try {
-          log = await fetchFailedLog($, jobId)
+          log = await fetchFailedLog($, jobId, pr.repo)
         } catch {
           log = undefined
         }
@@ -395,31 +424,26 @@ async function refreshOpenPrs($: $): Promise<void> {
   }
 }
 
-async function refreshReviewRequests($: $): Promise<void> {
+// Your login, so `a` (review with Claude) only shows on PRs you didn't open.
+async function learnViewer($: $): Promise<void> {
+  if (await read($, viewer)) return
   try {
-    const list = parseReviewRequests(
-      await gh($, ['search', 'prs', '--review-requested=@me', '--state=open', '--limit', '15', '--json', 'number,title,url,repository']),
-    )
-    await update($, reviewRequests, () => ({ prs: list }))
-  } catch (error) {
-    await update($, reviewRequests, old => ({ ...old, error: message(error) }))
+    const login = (await gh($, ['api', 'user', '--jq', '.login'])).trim()
+    if (login) await update($, viewer, () => login)
+  } catch {
+    // Without it, `a` stays hidden.
   }
 }
 
-/** Your open PRs and the ones waiting on your review: the board's two lists. */
 async function refreshLists($: $): Promise<void> {
-  await Promise.all([refreshOpenPrs($), refreshReviewRequests($)])
+  await Promise.all([refreshOpenPrs($), learnViewer($)])
 }
 
 let isPolling = false
 let polls = 0
-/** A poll was asked to look at everything while another was running: the next one does. */
-let isEverythingDue = false
+let isEverythingDue = false // asked for while a poll was running
 
-/**
- * Look at everything in flight. Finished releases are looked at once a minute
- * (or right away with `everything`), so a re-run of one is noticed.
- */
+// Finished releases are rechecked every few polls, or now with `everything`, to catch re-runs.
 async function poll($: $, everything = false): Promise<void> {
   if (everything) isEverythingDue = true
   if (isPolling) return
@@ -429,8 +453,12 @@ async function poll($: $, everything = false): Promise<void> {
   isEverythingDue = false
   try {
     if (!(await checkGh($))) return
+    const now = Date.now()
+    if ((await read($, prs)).some(pr => isStale(pr, now, AUTO_CLEAR_MS))) {
+      await update($, prs, list => list.filter(pr => !isStale(pr, now, AUTO_CLEAR_MS)))
+    }
     for (const pr of await read($, prs)) {
-      if (pr.state !== 'OPEN') continue // merged / closed: nothing left to watch
+      if (pr.state !== 'OPEN') continue
       try {
         await upsertPr($, await fetchPr($, pr.url))
       } catch (error) {
@@ -440,7 +468,6 @@ async function poll($: $, everything = false): Promise<void> {
       }
     }
     for (const release of await read($, releases)) {
-      // Every poll while it runs; once finished, now and then in case it is re-run.
       if (!isReleaseRunning(release) && !isEverything) continue
       await trackRelease($, release)
     }
@@ -452,26 +479,120 @@ async function poll($: $, everything = false): Promise<void> {
   }
 }
 
-/** Person-made moves of the board's focus ring so far: a newer one cancels a pending re-seat. */
-let ringMoves = 0
+// ── Board navigation ────────────────────────────────────────────────────
+
+let ringMoves = 0 // focus moves by the person; a newer one cancels a pending re-seat
+let focusedKey: string | undefined
+let rowKeys: readonly string[] = [] // as last drawn, top to bottom
+let sectionRows: Record<string, readonly string[]> = {}
+const lastInSection = new Map<string, string>()
+const windowStarts = new Map<string, number>()
+let drawnRows = new Set<string>() // rows inside their list's window
+// Rows each list shows, and whether Actions and your PRs sit side by side.
+let boardShape = { prRows: 4, sideRows: 3, isSideBySide: true }
+
+// Where a focusable sits top to bottom: action buttons first, then headings and rows.
+function orderOf(key: string): number {
+  const at = rowKeys.indexOf(key)
+  if (at >= 0) return at
+  if (!key.startsWith(SECTION)) return -1
+  const first = sectionRows[key.slice(SECTION.length)]?.[0]
+  const firstAt = first ? rowKeys.indexOf(first) : -1
+  return firstAt >= 0 ? firstAt - 0.5 : rowKeys.length
+}
+
+// The h panel, in two columns.
+const KEYS: readonly (readonly (readonly [string, string])[])[] = [
+  [
+    ['↑ ↓', 'move'],
+    ['enter', 'pin a row, or track one of yours'],
+    ['1 2 3', 'jump to a list'],
+    ['pgup pgdn', 'scroll the board'],
+    ['m', 'lists / detail layout'],
+    ['esc', 'back to the prompt'],
+  ],
+  [
+    ['f', 'fix it with Claude'],
+    ['e', 'rerun failed jobs'],
+    ['l / y', 'next log / copy log'],
+    ['a', 'review with Claude'],
+    ['o', 'open on GitHub'],
+    ['x / d', 'remove row / clear finished'],
+    ['c / z', 'clear all / undo'],
+    ['r', 'refresh'],
+  ],
+]
+
+// Shows `label` in place of the help line until `work` finishes.
+async function showWhile<T>($: $, label: string, work: () => Promise<T>): Promise<T> {
+  await update($, busy, () => label)
+  try {
+    return await work()
+  } finally {
+    await update($, busy, () => '')
+  }
+}
+
+async function goToRow($: $, key: string): Promise<void> {
+  ringMoves += 1
+  // Moves the list's window first if the row is scrolled out of it.
+  await update($, cursor, () => key)
+  await $.ui.focus({ requestId: PANE, key }).catch(() => undefined)
+  await $.ui.scroll({ in: PANE, to: { key }, block: 'nearest' }).catch(() => undefined)
+}
+
+async function jumpToSection($: $, id: string): Promise<void> {
+  const rows = sectionRows[id] ?? []
+  const remembered = lastInSection.get(id)
+  const key = remembered && rows.includes(remembered) ? remembered : rows[0]
+  if (key) await goToRow($, key)
+  else await $.ui.scroll({ in: PANE, to: { key: `${SECTION}${id}` }, block: 'nearest' }).catch(() => undefined)
+}
 
 /**
- * Open a tracked item. Its detail and buttons sit above the list, so opening one
- * changes how many buttons come before the rows, and the pane's ring (a place in
- * that order, not an element) would end up on another button. Once the board has
- * redrawn, put the ring back on the row, unless the person has moved it since.
+ * The pane's focus ring is an index into its focusable elements, not a key.
+ * Opening an item changes the buttons above the list, so after the redraw the
+ * index points at the wrong element. Put focus back on the row once it settles.
  */
 async function openItem($: $, key: string): Promise<void> {
   if ((await read($, selected)) === key) return
   await update($, selected, () => key)
   const move = ringMoves
   $.clock.after(RESEAT_MS, () => {
-    if (move === ringMoves) void $.ui.focus({ requestId: PANE, key: `${ITEM}${key}` }).catch(() => undefined)
+    if (move !== ringMoves) return
+    void $.ui.focus({ requestId: PANE, key: `${ITEM}${key}` }).catch(() => undefined)
+    void $.ui.scroll({ in: PANE, to: { key: `${ITEM}${key}` }, block: 'nearest' }).catch(() => undefined)
   })
   await prefetchLog($)
 }
 
+let removals = 0 // so an older removal's timer can't clear a newer undo
+
+async function keepForUndo($: $, label: string): Promise<void> {
+  const kept: Undo = { label, prs: await read($, prs), releases: await read($, releases), selected: await read($, selected) }
+  await update($, undo, () => kept)
+  const mine = ++removals
+  $.clock.after(UNDO_MS, () => {
+    if (mine === removals) void update($, undo, () => null)
+  })
+}
+
+async function undoRemoval($: $): Promise<void> {
+  const kept = await read($, undo)
+  if (!kept) return
+  removals += 1
+  await update($, undo, () => null)
+  await update($, prs, () => kept.prs)
+  await update($, releases, () => kept.releases)
+  await update($, selected, () => kept.selected)
+  await refreshStatus($)
+  await persistTracking($)
+  $.ui.toast(`Put back: ${kept.label}`)
+}
+
 async function clearAll($: $): Promise<void> {
+  const count = (await read($, prs)).length + (await read($, releases)).length
+  if (count > 0) await keepForUndo($, `${count} tracked item${count === 1 ? '' : 's'}`)
   await update($, prs, () => [])
   await update($, releases, () => [])
   await update($, selected, () => '')
@@ -479,36 +600,29 @@ async function clearAll($: $): Promise<void> {
   await persistTracking($)
 }
 
-/** Rows the minimized board asks for: the actions, the hint, then each group's heading and rows. */
-async function minimizedRows($: $): Promise<number> {
-  const prCount = (await read($, prs)).length
-  const releaseCount = (await read($, releases)).length
-  const headings = (prCount > 0 ? 1 : 0) + (releaseCount > 0 ? 1 : 0) + (prCount > 0 && releaseCount > 0 ? 1 : 0)
-  return 3 + headings + prCount + releaseCount
+// Actions and help, then each list's panel (border, heading, rows), a row apart.
+function listOnlyRows(): number {
+  const { prRows, sideRows, isSideBySide } = boardShape
+  const side = isSideBySide ? sideRows + 3 : 2 * (sideRows + 3)
+  return 2 + 1 + (prRows + 3) + 1 + side
 }
 
 async function openBoard($: $) {
-  const isSmall = await read($, isMinimized)
-  const opened = await $.ui.open({ id: PANE, title: TITLE, focus: true, rows: isSmall ? await minimizedRows($) : undefined })
+  const isSmall = (await read($, layout)) === 'list'
+  const opened = await $.ui.open({ id: PANE, title: TITLE, focus: true, rows: isSmall ? listOnlyRows() : undefined })
   void refreshLists($)
   return opened
 }
 
-async function toggleMinimized($: $): Promise<void> {
-  const isSmall = !(await read($, isMinimized))
-  await update($, isMinimized, () => isSmall)
-  // Re-asking sets the height; a size the person dragged still wins.
-  await $.ui.open({ id: PANE, title: TITLE, rows: isSmall ? await minimizedRows($) : undefined })
+async function cycleLayout($: $): Promise<void> {
+  const shown = NEXT_LAYOUT[await read($, layout)]
+  await update($, layout, () => shown)
+  const isSmall = shown === 'list'
+  // Re-opening sets the height, unless the person has resized the pane.
+  await $.ui.open({ id: PANE, title: TITLE, rows: isSmall ? listOnlyRows() : undefined })
 }
 
-const prKey = (pr: Pr) => `pr:${pr.url}`
-const releaseKey = (r: Release) => `release:${r.key}`
-/** Board rows are Buttons, so ↑↓ walk them: a tracked item, or one of your open PRs to track. */
-const ITEM = 'item:'
-const ADD = 'add:'
-const REVIEW = 'review:'
-
-/** The board item in the browser, through gh so it works on every OS. */
+// Through gh, so it works on every OS.
 async function openInBrowser($: $, key: string): Promise<void> {
   try {
     const pr = (await read($, prs)).find(one => prKey(one) === key)
@@ -517,22 +631,35 @@ async function openInBrowser($: $, key: string): Promise<void> {
       return
     }
     const release = (await read($, releases)).find(one => releaseKey(one) === key)
-    if (release?.tag && release.url) await gh($, ['release', 'view', release.tag, '--web'])
-    else if (release?.runs[0]) await gh($, ['run', 'view', String(release.runs[0].id), '--web'])
+    if (release?.tag && release.url) await gh($, ['release', 'view', release.tag, '--web', ...inRepo(release.repo)])
+    else if (release?.runs[0]) await gh($, ['run', 'view', String(release.runs[0].id), '--web', ...inRepo(release.repo)])
   } catch (error) {
     $.ui.toast(`Couldn't open it: ${message(error)}`)
   }
 }
 
 async function untrack($: $, key: string): Promise<void> {
+  const pr = (await read($, prs)).find(one => prKey(one) === key)
+  const release = (await read($, releases)).find(one => releaseKey(one) === key)
+  await keepForUndo($, pr ? `#${pr.number}` : (release?.label ?? 'the item'))
   await update($, prs, list => list.filter(pr => prKey(pr) !== key))
   await update($, releases, list => list.filter(r => releaseKey(r) !== key))
-  await update($, selected, () => '')
+  await update($, selected, open => (open === key ? '' : open))
   await refreshStatus($)
   await persistTracking($)
 }
 
-// ── Remembered across sessions ──────────────────────────────────────────
+async function clearFinished($: $): Promise<void> {
+  const done = [...(await read($, prs)), ...(await read($, releases))].filter(isFinished).length
+  if (done === 0) return
+  await keepForUndo($, `${done} finished`)
+  await update($, prs, list => list.filter(pr => !isFinished(pr)))
+  await update($, releases, list => list.filter(r => !isFinished(r)))
+  await refreshStatus($)
+  await persistTracking($)
+}
+
+// ── Persistence ─────────────────────────────────────────────────────────
 
 type Stored = { prs: string[]; releases: Omit<Release, 'runs' | 'error'>[] }
 let lastStored = ''
@@ -548,7 +675,7 @@ async function persistTracking($: $): Promise<void> {
     await $.store.set(STORE_KEY, stored)
     lastStored = text
   } catch {
-    // Remembering is a convenience; tracking carries on without it.
+    // Not fatal; tracking works without it.
   }
 }
 
@@ -568,22 +695,28 @@ async function restoreTracking($: $): Promise<void> {
       const pr = await fetchPr($, url)
       if (pr.state === 'OPEN') await upsertPr($, pr)
     } catch {
-      // Gone or unreachable: let it drop.
+      // Deleted or no longer reachable.
     }
   }
-  for (const release of stored.releases ?? []) await trackRelease($, { ...release, runs: [] })
+  for (const release of stored.releases ?? []) {
+    const restored = await trackRelease($, { ...release, runs: [] })
+    // Saved before releases recorded their repo, and not in this one: there's no way to find it.
+    if (restored.error && !release.repo) {
+      await update($, releases, list => list.filter(r => r.key !== release.key))
+      await persistTracking($)
+    }
+  }
   await refreshStatus($)
 }
 
-// ── The log under a failing check ───────────────────────────────────────
+// ── Detail data ─────────────────────────────────────────────────────────
 
-/** The failing check whose log the board shows for a PR: the chosen one, else the first. */
 function shownFailure(pr: Pr, chosen: string) {
   const failing = pr.checks.filter(c => c.state === 'fail' && parseActionsUrl(c.url)?.jobId)
   return failing.find(c => chosen === `${prKey(pr)}#${c.url}`) ?? failing[0]
 }
 
-/** Fetch what the selected PR's detail shows: its failing log, CI history, reviewer avatars. */
+// Log, CI history and avatars for the selected PR.
 async function prefetchLog($: $): Promise<void> {
   const key = await read($, selected)
   const list = await read($, prs)
@@ -592,7 +725,7 @@ async function prefetchLog($: $): Promise<void> {
   const check = shownFailure(pr, await read($, logCheck))
   const jobId = parseActionsUrl(check?.url)?.jobId
   await Promise.all([
-    jobId ? fetchFailedLog($, jobId).catch(() => undefined) : undefined,
+    jobId ? fetchFailedLog($, jobId, pr.repo).catch(() => undefined) : undefined,
     settings.heatmap ? fetchHistory($, pr) : undefined,
     settings.avatars ? fetchAvatars($, pr) : undefined,
   ])
@@ -602,7 +735,6 @@ function historyKey(pr: Pr, workflow: string): string {
   return `${pr.repo}|${pr.base ?? ''}|${workflow}`
 }
 
-/** The last runs of each of the PR's workflows on its base branch, cached a few minutes. */
 async function fetchHistory($: $, pr: Pr): Promise<void> {
   if (!pr.base) return
   const workflows = [...new Set(pr.checks.map(c => c.workflow).filter((w): w is string => Boolean(w)))]
@@ -621,7 +753,7 @@ async function fetchHistory($: $, pr: Pr): Promise<void> {
   }
 }
 
-/** Reviewer avatars as base64 PNGs; curl and base64 do the bytes, where there's a shell. */
+// $.http.fetch only returns text, so curl and base64 fetch the PNG.
 async function fetchAvatars($: $, pr: Pr): Promise<void> {
   const have = await read($, avatars)
   for (const reviewer of (pr.reviews ?? []).slice(0, 6)) {
@@ -636,7 +768,6 @@ async function fetchAvatars($: $, pr: Pr): Promise<void> {
   }
 }
 
-/** `l`: show the next failing check's log. */
 async function nextLog($: $, key: string): Promise<void> {
   const pr = (await read($, prs)).find(one => prKey(one) === key)
   if (!pr) return
@@ -660,7 +791,7 @@ async function copyLog($: $, key: string, surface: string): Promise<void> {
   $.ui.toast(copied.isCopied ? `Copied ${lines.length} log lines` : "Couldn't copy the log")
 }
 
-// ── Rerun what failed ───────────────────────────────────────────────────
+// ── Rerun and review ────────────────────────────────────────────────────
 
 async function rerunFailed($: $, key: string): Promise<void> {
   const pr = (await read($, prs)).find(one => prKey(one) === key)
@@ -678,7 +809,7 @@ async function rerunFailed($: $, key: string): Promise<void> {
   let started = 0
   for (const id of runIds) {
     try {
-      await gh($, ['run', 'rerun', id, '--failed'])
+      await gh($, ['run', 'rerun', id, '--failed', ...inRepo(pr?.repo ?? release?.repo)])
       started += 1
     } catch (error) {
       $.ui.toast(`Couldn't rerun run ${id}: ${message(error)}`)
@@ -689,11 +820,9 @@ async function rerunFailed($: $, key: string): Promise<void> {
 }
 
 async function askForReview($: $, url: string): Promise<void> {
-  const request = (await read($, reviewRequests)).prs.find(one => one.url === url)
   const pr = (await read($, prs)).find(one => one.url === url)
-  const what = request ?? (pr && { url: pr.url, number: pr.number, title: pr.title })
-  if (!what) return
-  const filled = await $.prompt.fill({ text: reviewPrompt(what) })
+  if (!pr) return
+  const filled = await $.prompt.fill({ text: reviewPrompt(pr) })
   $.ui.toast(filled.isFilled ? 'Review prompt ready: esc to the prompt, then Enter' : "Couldn't fill the prompt box")
 }
 
@@ -721,17 +850,16 @@ export const register: Register = (on, options) => {
     pollTimer?.cancel()
     frameTimer?.cancel()
     pollTimer = $.clock.every(POLL_MS, () => void poll($))
-    // The spinner only turns while something is in flight.
+    // Only tick while something is animating.
     frameTimer = $.clock.every(FRAME_MS, () => {
       void (async () => {
         const party = await read($, celebration)
         const now = await read($, frame)
-        // Invaders still bursting, falling or celebrating keep it turning too, so no frame freezes half-drawn.
         const isSettling = [...doneAt.values()].some(at => now - at < Math.max(LOSS_FRAMES, HIT_FRAMES + VICTORY_FRAMES))
-        if (!isLive(await read($, prs), await read($, releases)) && !isCelebrating(party, now) && !isSettling) return
+        const isBusy = (await read($, busy)) !== ''
+        if (!isLive(await read($, prs), await read($, releases)) && !isCelebrating(party, now) && !isSettling && !isBusy) return
         const n = ((await read($, frame)) + 1) % 100_000
         await update($, frame, () => n)
-        // The status line shows only the spinner: redraw it when that turns.
         if (n % SPINNER_EVERY === 0) await refreshStatus($)
       })()
     })
@@ -783,11 +911,12 @@ export const register: Register = (on, options) => {
   })
 
   on('command.run', { command: 'pulse-clear' }, async $ => {
+    const hadAny = (await read($, prs)).length + (await read($, releases)).length > 0
     await clearAll($)
-    return { text: 'Cleared. Nothing tracked.' }
+    return { text: hadAny ? 'Cleared. Nothing tracked. Press z on the board within 10s to put it back.' : 'Nothing was tracked.' }
   })
 
-  // Auto-track whatever Claude opens: PRs, releases, dispatched workflows.
+  // Track what Claude creates or pushes.
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const ran = await next(e)
     if (ran.deny !== undefined || ran.isError === true) return ran
@@ -807,7 +936,6 @@ export const register: Register = (on, options) => {
           $.ui.toast(`Watching ${release.label} pipelines`)
         }
       } else if (/\bgit\s+push\b/.test(e.command)) {
-        // A push to a branch with a PR: watch the checks it just set off.
         const pr = await fetchPr($, '')
         if (pr.state === 'OPEN' && !(await read($, prs)).some(one => one.url === pr.url)) {
           await trackPr($, pr.url)
@@ -825,12 +953,12 @@ export const register: Register = (on, options) => {
         }
       }
     } catch {
-      // Tracking is best effort; never get in the way of the tool call.
+      // Best effort; never fail the tool call.
     }
     return ran
   })
 
-  // ── Claude knows your CI: a line beside each prompt, when it says something new ──
+  // ── Prompt context ──
 
   let lastContext = ''
   on('prompt.submit', async ($, e, next) => {
@@ -842,7 +970,7 @@ export const register: Register = (on, options) => {
     return next({ ...e, context: [...(e.context ?? []), block] })
   })
 
-  // ── The band above the prompt: one line per tracked thing ──
+  // ── Band ──
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const prList = await read($, prs)
@@ -859,6 +987,7 @@ export const register: Register = (on, options) => {
     const rows = [
       ...prList.slice(-2).map(pr => ({
         key: pr.url,
+        repo: pr.repo,
         isParty: isCelebrating(party, f) && party.kind === 'merged' && party.key === prKey(pr),
         state: prState(pr) as Shown,
         label: `#${pr.number}`,
@@ -867,6 +996,7 @@ export const register: Register = (on, options) => {
       })),
       ...releaseList.slice(-1).map(r => ({
         key: r.key,
+        repo: r.repo ?? '',
         isParty: isCelebrating(party, f) && party.kind === 'released' && party.key === releaseKey(r),
         state: releaseState(r) as Shown,
         label: r.label,
@@ -887,19 +1017,39 @@ export const register: Register = (on, options) => {
       )
     }
 
+    // Fixed columns, as on the board, so rows line up and don't shift as counts change.
+    const shortName = (repo: string) => repo.split('/')[1] ?? repo
+    const repoWidth = Math.min(14, Math.max(0, ...rows.map(row => shortName(row.repo).length)))
+    const labelWidth = Math.min(14, Math.max(...rows.map(row => row.label.length)))
+    const countWidth = Math.max(...rows.map(row => `${row.t.pass}/${row.t.total}`.length))
     return (
       <Box flexDirection="column">
         {rows.map((row, i) => (
           <Box key={`band-${row.key}`} justifyContent="space-between">
             <Box gap={2}>
               <Box gap={1}>
-                <Text color={tone(row.state)}>{glyph(row.state, f)}</Text>
-                {row.url ? <Link href={row.url} label={row.label} /> : <Text>{row.label}</Text>}
+                <Box width={1} flexShrink={0}>
+                  <Text color={tone(row.state)}>{glyph(row.state, f)}</Text>
+                </Box>
+                {repoWidth > 0 && (
+                  <Box width={repoWidth} flexShrink={0}>
+                    <Text dimColor wrap="truncate">
+                      {clip(shortName(row.repo), repoWidth)}
+                    </Text>
+                  </Box>
+                )}
+                <Box width={labelWidth} flexShrink={0}>
+                  {row.url ? <Link href={row.url} label={clip(row.label, labelWidth)} /> : <Text wrap="truncate">{clip(row.label, labelWidth)}</Text>}
+                </Box>
               </Box>
-              {Bar({ t: row.t, width: BAND_BAR })}
-              <Text>
-                {row.t.pass}/{row.t.total}
-              </Text>
+              <Box width={BAND_BAR} flexShrink={0}>
+                {Bar({ t: row.t, width: BAND_BAR })}
+              </Box>
+              <Box width={countWidth} flexShrink={0} justifyContent="flex-end">
+                <Text>
+                  {row.t.pass}/{row.t.total}
+                </Text>
+              </Box>
               {row.isParty ? (
                 <Text color="magenta" bold>
                   {sparkle} {row.state === 'merged' ? 'merged' : 'released'} {sparkle}
@@ -919,7 +1069,7 @@ export const register: Register = (on, options) => {
                   hotkey="b"
                   label="open board"
                   onPress={async () => {
-                    // The band holds the keys here, so the board can't take them itself.
+                    // The band has focus here, so the board can't take it.
                     await openBoard($)
                     $.ui.toast('Board open · esc, then ctrl+x tab to use its keys', { timeoutMs: 5000 })
                   }}
@@ -933,21 +1083,45 @@ export const register: Register = (on, options) => {
     )
   })
 
-  // ── The board: a list ↑↓ walk, the selected item below it, then your open PRs ──
+  // ── Board ──
 
-  // The selection follows the focus ring: arrowing onto a row shows it.
   on('ui.focus', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
     const element = e.element ?? ''
-    if (e.origin.kind === 'person') ringMoves += 1
+    const isPerson = e.origin.kind === 'person'
+    if (isPerson) ringMoves += 1
+    // The engine only knows the rows on screen. Stepping off the edge of a
+    // list's window goes to the hidden row next to it instead of skipping it.
+    if (isPerson && focusedKey && rowKeys.includes(focusedKey) && element !== focusedKey) {
+      const toward = nextRow(rowKeys, focusedKey, orderOf(element) > orderOf(focusedKey) ? 1 : -1)
+      if (toward && !drawnRows.has(toward)) {
+        await goToRow($, toward)
+        return {}
+      }
+    }
     const result = await next(e)
-    if (element.startsWith(ITEM) && e.origin.kind === 'person') await openItem($, element.slice(ITEM.length))
+    if (!('deny' in result)) {
+      focusedKey = e.element
+      for (const [id, rows] of Object.entries(sectionRows)) if (rows.includes(element)) lastInSection.set(id, element)
+      await update($, cursor, () => element)
+    }
     return result
+  })
+
+  // When the board overflows, the engine turns ↑↓ into scrolling. Move the
+  // selection instead and scroll it into view; the wheel and page keys still scroll.
+  on('ui.scroll', { component: 'Pane', requestId: PANE }, async ($, e, next) => {
+    if (e.origin.kind !== 'person' || e.pointer || Math.abs(e.by) !== 1) return next(e)
+    const first = focusedKey?.startsWith(SECTION) ? sectionRows[focusedKey.slice(SECTION.length)]?.[0] : undefined
+    const to = first ? (e.by > 0 ? first : nextRow(rowKeys, first, -1)) : nextRow(rowKeys, focusedKey, e.by)
+    if (!to) return next(e)
+    await goToRow($, to)
+    return {}
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const elements = $.ui.resolve(e)
     const { Box, Button, Link, Text } = elements
-    // Pixel art is terminal-only; elsewhere the effects are simply left out.
+    // Raster and Image are terminal-only.
     const Raster = 'Raster' in elements ? elements.Raster : undefined
     const Image = 'Image' in elements ? elements.Image : undefined
     const party = await read($, celebration)
@@ -956,12 +1130,16 @@ export const register: Register = (on, options) => {
     const prList = await read($, prs)
     const releaseList = await read($, releases)
     const mine = await read($, openPrs)
-    const reviews = await read($, reviewRequests)
+    const me = await read($, viewer)
     const allLogs = await read($, logs)
     const chosenLog = await read($, logCheck)
     const f = await read($, frame)
-    const isSmall = await read($, isMinimized)
-    const props = e.props as { bodyColumns?: number; isFocused?: boolean }
+    const shown = await read($, layout)
+    const kept = await read($, undo)
+    const cursorKey = await read($, cursor)
+    const doing = await read($, busy)
+    const isShowingKeys = await read($, isKeysShown)
+    const props = e.props as { bodyColumns?: number; isFocused?: boolean; scroll?: { bodyRows?: number } }
     const columns = Number(props.bodyColumns ?? 80)
     const inner = Math.max(20, columns - 2)
     const barWidth = Math.max(10, Math.min(64, inner))
@@ -1013,34 +1191,49 @@ export const register: Register = (on, options) => {
       </Box>
     )
 
-    /** glyph · workflow · name · time, columns aligned. */
-    const Row = ({ key, state, workflow, name, url, ms, indent = 0, isWaiting = false }: {
+    // A detail row: status, group (a check's workflow, a job's run), name, time.
+    // Fixed widths, shared by every row in the detail, so the columns line up.
+    const groupWidthOf = (groups: readonly string[]) => Math.min(24, Math.max(0, ...groups.map(group => group.length)))
+    const Row = ({ key, state, group, groupWidth, name, url, ms, isWaiting = false, isDim = false }: {
       key: string
       state: Shown
-      isWaiting?: boolean
-      workflow?: string
+      group: string
+      groupWidth: number
       name: string
       url?: string
       ms?: number
-      indent?: number
-    }) => (
-      <Box key={key} gap={2} paddingLeft={indent}>
-        <Text color={tone(state)}>{glyph(state, f)}</Text>
-        {workflow !== undefined && (
-          <Box width={WORKFLOW_COLUMN} flexShrink={0}>
-            <Text dimColor wrap="truncate-end">
-              {workflow}
-            </Text>
+      isWaiting?: boolean
+      isDim?: boolean
+    }) => {
+      const columns = [1, groupWidth, TIME_COLUMN].filter(w => w > 0)
+      const nameWidth = Math.max(8, inner - columns.reduce((sum, w) => sum + w, 0) - 2 * columns.length)
+      return (
+        <Box key={key} gap={2}>
+          <Box width={1} flexShrink={0}>
+            <Text color={tone(state)}>{glyph(state, f)}</Text>
           </Box>
-        )}
-        <Box flexGrow={1} flexShrink={1} overflow="hidden">
-          {url ? <Link href={url} label={name} /> : <Text wrap="truncate-end">{name}</Text>}
+          {groupWidth > 0 && (
+            <Box width={groupWidth} flexShrink={0}>
+              <Text dimColor wrap="truncate">
+                {clip(group, groupWidth)}
+              </Text>
+            </Box>
+          )}
+          <Box width={nameWidth} flexShrink={0} overflow="hidden">
+            {url ? (
+              <Link href={url} label={clip(name, nameWidth)} />
+            ) : (
+              <Text dimColor={isDim} wrap="truncate">
+                {clip(name, nameWidth)}
+              </Text>
+            )}
+          </Box>
+          <Box width={TIME_COLUMN} flexShrink={0} justifyContent="flex-end">
+            <Text dimColor>{isWaiting ? 'waiting' : state === 'pending' ? 'running' : duration(ms)}</Text>
+          </Box>
         </Box>
-        <Box width={TIME_COLUMN} flexShrink={0} justifyContent="flex-end">
-          <Text dimColor>{isWaiting ? 'waiting' : state === 'pending' ? 'running' : duration(ms)}</Text>
-        </Box>
-      </Box>
-    )
+      )
+    }
 
     const items = [
       ...[...prList].reverse().map(pr => ({
@@ -1054,7 +1247,7 @@ export const register: Register = (on, options) => {
       ...[...releaseList].reverse().map(r => ({
         key: releaseKey(r),
         label: r.label,
-        title: 'release',
+        title: r.runs[0]?.title ?? '',
         state: releaseState(r) as Shown,
         t: tally(releaseItems(r)),
         release: r,
@@ -1062,13 +1255,26 @@ export const register: Register = (on, options) => {
     ]
     const chosen = await read($, selected)
     const openKey = items.some(item => item.key === chosen) ? chosen : (items[0]?.key ?? '')
-    const labelWidth = Math.max(4, ...items.map(item => item.label.length), ...mine.prs.map(pr => `#${pr.number}`.length), ...reviews.prs.map(pr => `#${pr.number}`.length))
+    const labelWidth = Math.min(14, Math.max(4, ...items.map(item => item.label.length), ...mine.prs.map(pr => `#${pr.number}`.length)))
 
     const drawPr = (pr: Pr) => {
       const t = tally(pr.checks)
       const state = prState(pr)
-      const ordered = byUrgency(pr.checks)
-      const hasWorkflows = pr.checks.some(c => c.workflow)
+      const workflows = [...new Set(pr.checks.map(c => c.workflow).filter((w): w is string => Boolean(w)))]
+      const groupWidth = groupWidthOf(workflows)
+      // Failures and their log first, then everything else.
+      const failing = pr.checks.filter(c => c.state === 'fail')
+      const others = byUrgency(pr.checks.filter(c => c.state !== 'fail'))
+      const checkRow = (c: (typeof pr.checks)[number]) =>
+        Row({
+          key: `${pr.url}#${c.workflow ?? ''}/${c.name}`,
+          state: c.state,
+          group: c.workflow ?? '',
+          groupWidth,
+          name: c.name,
+          url: c.url,
+          ms: c.durationMs,
+        })
       const review = reviewLabel(pr.review)
       const merge = mergeLabel(pr)
       return (
@@ -1082,9 +1288,11 @@ export const register: Register = (on, options) => {
           <Box flexDirection="column">
             <Box gap={2}>
               <Link href={pr.url} label={`#${pr.number}`} />
-              <Text bold wrap="truncate-end">
-                {pr.title}
-              </Text>
+              <Box flexShrink={1} minWidth={0} overflow="hidden">
+                <Text bold wrap="truncate-end">
+                  {pr.title}
+                </Text>
+              </Box>
             </Box>
             <Text dimColor wrap="truncate-end">
               {pr.repo.split('/')[1] ?? pr.repo} · {pr.branch}
@@ -1096,23 +1304,9 @@ export const register: Register = (on, options) => {
             {Bar({ t, width: barWidth })}
           </Box>
 
-          {ordered.length > 0 && (
+          {failing.length > 0 && (
             <Box flexDirection="column">
-              {ordered.slice(0, MAX_CHECKS).map(c =>
-                Row({
-                  key: `${pr.url}#${c.workflow ?? ''}/${c.name}`,
-                  state: c.state,
-                  workflow: hasWorkflows ? c.workflow ?? '' : undefined,
-                  name: c.name,
-                  url: c.url,
-                  ms: c.durationMs,
-                }),
-              )}
-              {ordered.length > MAX_CHECKS && (
-                <Box paddingLeft={3}>
-                  <Text dimColor>{ordered.length - MAX_CHECKS} more</Text>
-                </Box>
-              )}
+              {failing.map(checkRow)}
             </Box>
           )}
 
@@ -1139,9 +1333,22 @@ export const register: Register = (on, options) => {
             )
           })()}
 
+          {others.length > 0 && (
+            <Box flexDirection="column">
+              {others.slice(0, Math.max(0, MAX_CHECKS - failing.length)).map(checkRow)}
+              {failing.length + others.length > MAX_CHECKS && (
+                <Box paddingLeft={3}>
+                  <Text dimColor>{failing.length + others.length - Math.max(MAX_CHECKS, failing.length)} more</Text>
+                </Box>
+              )}
+            </Box>
+          )}
+
           {settings.heatmap && pr.base && (() => {
-            const workflows = [...new Set(pr.checks.map(c => c.workflow).filter((w): w is string => Boolean(w)))].slice(0, 6)
-            const rows = workflows.map(w => ({ workflow: w, past: pastRuns[historyKey(pr, w)] })).filter(row => row.past && row.past.results.length > 0)
+            const rows = workflows
+              .slice(0, 6)
+              .map(w => ({ workflow: w, past: pastRuns[historyKey(pr, w)] }))
+              .filter(row => row.past && row.past.results.length > 0)
             if (rows.length === 0) return null
             return (
               <Box flexDirection="column">
@@ -1150,15 +1357,16 @@ export const register: Register = (on, options) => {
                 </Text>
                 {rows.map(row => (
                   <Box key={`history-${row.workflow}`} gap={2}>
-                    <Box width={WORKFLOW_COLUMN} flexShrink={0}>
-                      <Text dimColor wrap="truncate-end">
-                        {row.workflow}
+                    <Box width={1} flexShrink={0} />
+                    <Box width={Math.max(groupWidth, 1)} flexShrink={0}>
+                      <Text dimColor wrap="truncate">
+                        {clip(row.workflow, Math.max(groupWidth, 1))}
                       </Text>
                     </Box>
                     <Box>
                       {[...row.past!.results].reverse().map((result, i) => (
                         <Text key={`h-${i}`} color={tone(result)} dimColor={result === 'skip'}>
-                          ■
+                          ⣿
                         </Text>
                       ))}
                     </Box>
@@ -1204,6 +1412,7 @@ export const register: Register = (on, options) => {
 
     const drawRelease = (r: Release) => {
       const t = tally(releaseItems(r))
+      const runWidth = groupWidthOf(r.runs.map(run => run.name))
       const state = releaseState(r)
       return (
         <Box key={`detail-${r.key}`} flexDirection="column" gap={1}>
@@ -1246,14 +1455,23 @@ export const register: Register = (on, options) => {
             <Box flexDirection="column">
               {r.runs.map(run => (
                 <Box key={`run-${run.id}`} flexDirection="column">
-                  {Row({ key: `run-row-${run.id}`, state: run.state, name: run.name, url: run.url || undefined, ms: run.durationMs })}
+                  {Row({
+                    key: `run-row-${run.id}`,
+                    state: run.state,
+                    group: run.name,
+                    groupWidth: runWidth,
+                    name: run.title || `run ${run.id}`,
+                    url: run.url || undefined,
+                    ms: run.durationMs,
+                  })}
                   {byUrgency(run.jobs.filter(job => job.state !== 'pass'))
                     .slice(0, MAX_JOBS)
                     .map(job =>
                       Row({
                         key: `job-${run.id}-${job.name}`,
-                        indent: 3,
                         state: job.state,
+                        group: '',
+                        groupWidth: runWidth,
                         name: job.name,
                         url: job.url,
                         ms: job.durationMs,
@@ -1269,177 +1487,310 @@ export const register: Register = (on, options) => {
       )
     }
 
-    /** One list row: marker, state, the label ↑↓ land on, title, a small bar. */
-    const ListRow = ({ key, marker, state, label, title, t, isOpen, buttonKey, onPress }: {
+    const isTall = (props.scroll?.bodyRows ?? 40) >= 32
+    boardShape = { prRows: isTall ? 4 : 3, sideRows: isTall ? 3 : 2, isSideBySide: inner >= 100 }
+    const shortRepo = (repo: string) => repo.split('/')[1] ?? repo
+    // Every list shares one set of column widths so the columns line up across them.
+    const allRepos = [
+      ...prList.map(pr => pr.repo),
+      ...releaseList.map(r => r.repo ?? ''),
+      ...(mine.prs.length > 0 ? [mine.repo] : []),
+    ].map(shortRepo)
+    const repoWidth = Math.min(14, Math.max(0, ...allRepos.map(repo => repo.length)))
+    const counts = [...items.map(item => item.t), ...mine.prs.map(pr => tally(pr.checks))].map(t => `${t.pass}/${t.total}`.length)
+    const countWidth = Math.max(3, ...counts)
+
+    const BAR_CELLS = 6
+    // Every column has a fixed width, the title included (whatever the row has
+    // left), so nothing a terminal draws wider than expected can shift the rest.
+    const ListRow = ({ key, width, marker, state, repo, label, title, t, isOpen, buttonKey, onPress }: {
       key: string
+      width: number
       marker: string
       state: Shown
+      repo: string
       label: string
       title: string
-      t?: Tally
+      t: Tally
       isOpen: boolean
       buttonKey: string
       onPress: () => unknown
-    }) => (
-      <Box key={key} gap={1}>
-        <Text color="cyan" dimColor={!isOpen}>
-          {marker}
-        </Text>
-        <Text color={tone(state)}>{glyph(state, f)}</Text>
-        <Box width={labelWidth} flexShrink={0}>
-          <Button key={buttonKey} plain dimColor={!isOpen} label={label} onPress={onPress} />
-        </Box>
-        <Box flexGrow={1} flexShrink={1} overflow="hidden">
-          <Text bold={isOpen} dimColor={!isOpen} wrap="truncate-end">
-            {title}
-          </Text>
-        </Box>
-        {t && Bar({ t, width: 6 })}
-        {t && (
-          <Box width={5} flexShrink={0} justifyContent="flex-end">
+    }) => {
+      const columns = [1, 1, repoWidth, labelWidth, BAR_CELLS, countWidth].filter(w => w > 0)
+      const titleWidth = Math.max(4, width - columns.reduce((sum, w) => sum + w, 0) - columns.length)
+      return (
+        <Box key={key} gap={1} {...(isOpen || cursorKey === buttonKey ? { backgroundColor: 'userMessageBackground' } : {})}>
+          <Box width={1} flexShrink={0}>
+            <Text color="cyan" dimColor={!isOpen}>
+              {marker}
+            </Text>
+          </Box>
+          <Box width={1} flexShrink={0}>
+            <Text color={tone(state)}>{glyph(state, f)}</Text>
+          </Box>
+          {repoWidth > 0 && (
+            <Box width={repoWidth} flexShrink={0}>
+              <Text dimColor wrap="truncate">
+                {clip(repo, repoWidth)}
+              </Text>
+            </Box>
+          )}
+          <Box width={labelWidth} flexShrink={0}>
+            <Button key={buttonKey} plain dimColor={!isOpen} label={clip(label, labelWidth)} onPress={onPress} />
+          </Box>
+          <Box width={titleWidth} flexShrink={0} overflow="hidden">
+            <Text bold={isOpen} dimColor={!isOpen} wrap="truncate">
+              {clip(title, titleWidth)}
+            </Text>
+          </Box>
+          <Box width={BAR_CELLS} flexShrink={0}>
+            {Bar({ t, width: BAR_CELLS })}
+          </Box>
+          <Box width={countWidth} flexShrink={0} justifyContent="flex-end">
             <Text dimColor>
               {t.pass}/{t.total}
             </Text>
           </Box>
-        )}
-      </Box>
-    )
-
-    const prItems = items.filter(item => 'pr' in item)
-    const actionItems = items.filter(item => 'release' in item)
-    const trackedRow = (item: (typeof items)[number]) =>
-      ListRow({
-        key: `row-${item.key}`,
-        state: item.state,
-        label: item.label,
-        title: item.title,
-        t: item.t,
-        isOpen: item.key === openKey,
-        marker: item.key === openKey ? '▌' : ' ',
-        buttonKey: `${ITEM}${item.key}`,
-        onPress: () => openItem($, item.key),
-      })
+        </Box>
+      )
+    }
 
     const tracked = new Set(prList.map(pr => pr.url))
+    const trackAndOpen = async (url: string) => {
+      await trackPr($, url)
+      await update($, selected, () => `pr:${url}`)
+    }
     const untracked = mine.prs.filter(pr => !tracked.has(pr.url))
+    const prItems = items.filter(item => 'pr' in item)
+    const actionItems = items.filter(item => 'release' in item)
+    const isListShown = shown !== 'detail'
+    const sections = {
+      prs: isListShown ? prItems.map(item => `${ITEM}${item.key}`) : [],
+      actions: isListShown ? actionItems.map(item => `${ITEM}${item.key}`) : [],
+      mine: isListShown ? untracked.map(pr => `${ADD}${pr.url}`) : [],
+    }
+    rowKeys = [...sections.prs, ...sections.actions, ...sections.mine]
+    sectionRows = sections
+    drawnRows = new Set()
+    type Section = keyof typeof sections
+    const ids = Object.keys(sections) as Section[]
+    const active: Section =
+      ids.find(id => sections[id].includes(cursorKey)) ?? ids.find(id => sections[id].includes(`${ITEM}${openKey}`)) ?? 'prs'
+    const focusIn = (id: Section) =>
+      sections[id].includes(cursorKey) ? cursorKey : sections[id].includes(`${ITEM}${openKey}`) ? `${ITEM}${openKey}` : ''
+    const where = (id: Section) => {
+      const keys = sections[id]
+      const at = keys.indexOf(focusIn(id))
+      return keys.length === 0 ? '' : at === -1 ? ` · ${keys.length}` : ` · ${at + 1} of ${keys.length}`
+    }
+    const Heading = ({ id, label }: { id: Section; label: string }) => (
+      <Button
+        key={`${SECTION}${id}`}
+        plain
+        dimColor={id !== active}
+        hotkey={String(Object.keys(sections).indexOf(id) + 1)}
+        label={label}
+        onPress={() => jumpToSection($, id)}
+      />
+    )
+
+    // A list panel of fixed height: a border (lit when active), the heading with
+    // where you are and what's scrolled out of view, and `size` rows.
+    type Line = { key: string; draw: (width: number) => RenderChildren }
+    const ListBlock = ({ id, label, lines, size, empty, width }: { id: Section; label: string; lines: Line[]; size: number; empty: string; width?: number }) => {
+      const at = lines.findIndex(line => line.key !== '' && line.key === focusIn(id))
+      const first = scrollWindow(windowStarts.get(id) ?? 0, at, lines.length, size)
+      windowStarts.set(id, first)
+      const visible = lines.slice(first, first + size)
+      for (const line of visible) if (line.key) drawnRows.add(line.key)
+      const above = lines.slice(0, first).filter(line => line.key).length
+      const below = lines.slice(first + size).filter(line => line.key).length
+      const more = [above > 0 && `↑${above}`, below > 0 && `↓${below}`].filter(Boolean).join(' ')
+      return (
+        <Box
+          key={`list-${id}`}
+          flexDirection="column"
+          height={size + 3}
+          minWidth={0}
+          borderStyle="round"
+          paddingX={1}
+          {...(id === active ? { borderColor: 'cyan' } : { borderDimColor: true })}
+          {...(width ? { width, flexShrink: 0 } : { flexGrow: 1 })}
+        >
+          {Heading({ id, label: more ? `${label}${where(id)}  ${more}` : `${label}${where(id)}` })}
+          <Box flexDirection="column" height={size}>
+            {visible.length > 0 ? visible.map(line => line.draw((width ?? inner) - 4)) : <Text dimColor wrap="truncate-end">{empty}</Text>}
+          </Box>
+        </Box>
+      )
+    }
+
+    const trackedLine = (item: (typeof items)[number]): Line => ({
+      key: `${ITEM}${item.key}`,
+      draw: width =>
+        ListRow({
+          key: `row-${item.key}`,
+          width,
+          state: item.state,
+          repo: shortRepo('pr' in item ? item.pr.repo : (item.release.repo ?? '')),
+          label: item.label,
+          title: item.title,
+          t: item.t,
+          isOpen: item.key === openKey,
+          marker: item.key === openKey ? '>' : ' ',
+          buttonKey: `${ITEM}${item.key}`,
+          onPress: () => openItem($, item.key),
+        }),
+    })
+
+    const mineRepo = mine.repo ? shortRepo(mine.repo) : ''
+    const mineLines: Line[] = untracked.map(pr => ({
+      key: `${ADD}${pr.url}`,
+      draw: width =>
+        ListRow({
+          key: `mine-${pr.url}`,
+          width,
+          state: pr.checks.length === 0 ? 'skip' : overall(pr.checks),
+          repo: mineRepo,
+          label: `#${pr.number}`,
+          title: pr.isDraft ? `${pr.title} (draft)` : pr.title,
+          t: tally(pr.checks),
+          isOpen: false,
+          marker: '+',
+          buttonKey: `${ADD}${pr.url}`,
+          onPress: () => trackAndOpen(pr.url),
+        }),
+    }))
+
     const open = items.find(item => item.key === openKey)
     const detail = open ? ('pr' in open ? drawPr(open.pr) : drawRelease(open.release)) : null
+    const openPr = open && 'pr' in open ? open.pr : undefined
+    const failingChecks = openPr?.checks.filter(c => c.state === 'fail') ?? []
+    const hasFailedRuns = open && 'release' in open && open.release.runs.some(run => run.state === 'fail')
+    // x removes the highlighted tracked row, or the pinned one when the cursor is elsewhere.
+    const isTrackedRow = sections.prs.includes(cursorKey) || sections.actions.includes(cursorKey)
+    const removable = isTrackedRow ? cursorKey.slice(ITEM.length) : openKey
+    const finishedCount = [...prList, ...releaseList].filter(isFinished).length
+
+    // Side by side, each list gets a fixed half, or the busier one crowds the other out.
+    const leftWidth = boardShape.isSideBySide ? Math.floor((inner - 1) / 2) : undefined
+    const rightWidth = leftWidth === undefined ? undefined : inner - 1 - leftWidth
+    const prBlock = ListBlock({
+      id: 'prs',
+      label: 'PULL REQUESTS',
+      lines: prItems.map(trackedLine),
+      size: boardShape.prRows,
+      empty: 'None tracked. Press enter on one of your PRs, or /pulse-pr.',
+    })
+    const actionBlock = ListBlock({
+      id: 'actions',
+      label: 'ACTIONS',
+      lines: actionItems.map(trackedLine),
+      size: boardShape.sideRows,
+      width: leftWidth,
+      empty: 'None tracked. /pulse-release, or a release Claude creates.',
+    })
+    const mineBlock = ListBlock({
+      id: 'mine',
+      label: 'YOUR OPEN PRS',
+      lines: mineLines,
+      size: boardShape.sideRows,
+      width: rightWidth,
+      empty: mine.error ?? (mine.prs.length > 0 ? 'All tracked.' : 'None open.'),
+    })
 
     return (
       <Box flexDirection="column" paddingX={1} gap={1}>
-        {/* Actions, then the help on a line of its own so nothing cuts it off. */}
+        {/* Help on its own line so it never gets truncated. */}
         <Box flexDirection="column">
           <Box gap={3} flexWrap="wrap">
-            <Button key="refresh" plain dimColor hotkey="r" label="Refresh" onPress={() => Promise.all([poll($, true), refreshLists($)])} />
+            <Button key="refresh" plain dimColor hotkey="r" label="Refresh" onPress={() => showWhile($, 'Refreshing', () => Promise.all([poll($, true), refreshLists($)]))} />
             <Button
-              key="minimize"
+              key="layout"
               plain
               dimColor
               hotkey="m"
-              label={isSmall ? 'Expand' : 'Minimize'}
-              onPress={() => toggleMinimized($)}
+              label={LAYOUT_LABEL[NEXT_LAYOUT[shown]]}
+              onPress={() => cycleLayout($)}
             />
-            {open && 'pr' in open && open.pr.checks.some(c => c.state === 'fail') && (
-              <Button key="fix" plain hotkey="f" label="Fix it" onPress={() => fixIt($, openKey, e.surface)} />
+            {failingChecks.length > 0 && (
+              <Button key="fix" plain hotkey="f" label="Fix it" onPress={() => showWhile($, 'Reading the failing logs', () => fixIt($, openKey, e.surface))} />
             )}
-            {open && (('pr' in open && open.pr.checks.some(c => c.state === 'fail')) || ('release' in open && open.release.runs.some(run => run.state === 'fail'))) && (
-              <Button key="rerun" plain dimColor hotkey="e" label="Rerun failed" onPress={() => rerunFailed($, openKey)} />
+            {(failingChecks.length > 0 || hasFailedRuns) && (
+              <Button key="rerun" plain dimColor hotkey="e" label="Rerun failed" onPress={() => showWhile($, 'Rerunning the failed jobs', () => rerunFailed($, openKey))} />
             )}
-            {open && 'pr' in open && open.pr.checks.filter(c => c.state === 'fail').length > 1 && (
-              <Button key="log" plain dimColor hotkey="l" label="Next log" onPress={() => nextLog($, openKey)} />
+            {failingChecks.length > 1 && (
+              <Button key="log" plain dimColor hotkey="l" label="Next log" onPress={() => showWhile($, 'Loading the log', () => nextLog($, openKey))} />
             )}
-            {open && 'pr' in open && open.pr.checks.some(c => c.state === 'fail') && (
+            {failingChecks.length > 0 && (
               <Button key="copy" plain dimColor hotkey="y" label="Copy log" onPress={() => copyLog($, openKey, e.surface)} />
             )}
-            {open && 'pr' in open && reviews.prs.some(one => one.url === open.pr.url) && (
-              <Button key="ask" plain hotkey="a" label="Review with Claude" onPress={() => askForReview($, open.pr.url)} />
+            {openPr && openPr.state === 'OPEN' && me && openPr.author && openPr.author !== me && (
+              <Button key="ask" plain hotkey="a" label="Review with Claude" onPress={() => askForReview($, openPr.url)} />
             )}
             {openKey && <Button key="open" plain dimColor hotkey="o" label="Open" onPress={() => openInBrowser($, openKey)} />}
-            {openKey && <Button key="remove" plain dimColor hotkey="x" label="Remove" onPress={() => untrack($, openKey)} />}
-            {items.length > 0 && <Button key="clear" plain dimColor hotkey="c" label="Clear" onPress={() => clearAll($)} />}
-          </Box>
-          <Text dimColor wrap="truncate-end">
-            {props.isFocused ? '↑↓ move · enter select or track · o open on GitHub · esc back to prompt' : 'ctrl+x tab or click to use the keyboard'}
-          </Text>
-        </Box>
-
-        {/* The opened item stays put under the actions, whatever the lists below do. */}
-        {!isSmall && detail}
-
-        <Box flexDirection="column">
-          <Text bold dimColor>
-            TRACKING
-          </Text>
-          {items.length === 0 && (
-            <Text dimColor>Nothing yet. Pick one of your PRs below, or /pulse-pr and /pulse-release.</Text>
-          )}
-          {prItems.length > 0 && <Text dimColor>Pull requests</Text>}
-          {prItems.map(trackedRow)}
-          {prItems.length > 0 && actionItems.length > 0 && (
-            <Text key="tracking-rule" dimColor wrap="truncate">
-              {'─'.repeat(200)}
-            </Text>
-          )}
-          {actionItems.length > 0 && <Text dimColor>Actions</Text>}
-          {actionItems.map(trackedRow)}
-        </Box>
-
-        {!isSmall && (
-          <Box flexDirection="column">
-            <Text bold dimColor wrap="truncate-end">
-              YOUR OPEN PRS{mine.repo ? ` · ${mine.repo.split('/')[1] ?? mine.repo}` : ''}
-            </Text>
-            {mine.error && <Text color="yellow" wrap="truncate-end">{mine.error}</Text>}
-            {!mine.error && untracked.length === 0 && (
-              <Text dimColor>{mine.prs.length > 0 ? 'All tracked.' : 'None open.'}</Text>
+            {removable && <Button key="remove" plain dimColor hotkey="x" label="Remove" onPress={() => untrack($, removable)} />}
+            {finishedCount > 0 && (
+              <Button key="clear-finished" plain dimColor hotkey="d" label={`Clear finished (${finishedCount})`} onPress={() => clearFinished($)} />
             )}
-            {untracked.map(pr => {
-              const t = tally(pr.checks)
-              const state: Shown = pr.checks.length === 0 ? 'skip' : overall(pr.checks)
-              return ListRow({
-                key: `mine-${pr.url}`,
-                state,
-                label: `#${pr.number}`,
-                title: pr.isDraft ? `${pr.title} (draft)` : pr.title,
-                t,
-                isOpen: false,
-                marker: '+',
-                buttonKey: `${ADD}${pr.url}`,
-                onPress: async () => {
-                  await trackPr($, pr.url)
-                  await update($, selected, () => `pr:${pr.url}`)
-                },
-              })
-            })}
+            {items.length > 0 && <Button key="clear" plain dimColor hotkey="c" label="Clear" onPress={() => clearAll($)} />}
+            {kept && <Button key="undo" plain hotkey="z" label={`Undo (${kept.label})`} onPress={() => undoRemoval($)} />}
+            <Button
+              key="keys"
+              plain
+              dimColor
+              hotkey="h"
+              label={isShowingKeys ? 'Hide keys' : 'Keys'}
+              onPress={() => update($, isKeysShown, shown => !shown)}
+            />
+          </Box>
+          {doing ? (
+            <Text color="yellow" wrap="truncate-end">
+              {glyph('pending', f)} {doing}…
+            </Text>
+          ) : (
+            <Text dimColor wrap="truncate-end">
+              {props.isFocused ? '↑↓ move · enter pin · 1 2 3 lists · h all keys · esc back to prompt' : 'ctrl+x tab or click to use the keyboard'}
+            </Text>
+          )}
+        </Box>
+
+        {isShowingKeys && (
+          <Box key="keys-panel" borderStyle="round" borderDimColor paddingX={1} gap={4}>
+            {KEYS.map((group, column) => (
+              <Box key={`keys-${column}`} flexDirection="column">
+                {group.map(([keys, does]) => (
+                  <Box key={`key-${keys}`} gap={1}>
+                    <Box width={9} flexShrink={0}>
+                      <Text color="cyan">{keys}</Text>
+                    </Box>
+                    <Text dimColor wrap="truncate">
+                      {does}
+                    </Text>
+                  </Box>
+                ))}
+              </Box>
+            ))}
           </Box>
         )}
 
-        {!isSmall && (reviews.prs.length > 0 || reviews.error) && (
-          <Box flexDirection="column">
-            <Text bold dimColor>
-              WAITING ON YOUR REVIEW
-            </Text>
-            {reviews.error && <Text color="yellow" wrap="truncate-end">{reviews.error}</Text>}
-            {!reviews.error && reviews.prs.every(pr => tracked.has(pr.url)) && <Text dimColor>All tracked.</Text>}
-            {reviews.prs
-              .filter(pr => !tracked.has(pr.url))
-              .map(pr =>
-                ListRow({
-                  key: `review-${pr.url}`,
-                  state: 'skip',
-                  label: `#${pr.number}`,
-                  title: `${pr.repo.split('/')[1] ?? pr.repo} · ${pr.title}`,
-                  isOpen: false,
-                  marker: '?',
-                  buttonKey: `${REVIEW}${pr.url}`,
-                  onPress: async () => {
-                    await trackPr($, pr.url)
-                    await update($, selected, () => `pr:${pr.url}`)
-                  },
-                }),
-              )}
-          </Box>
-        )}
+        {/* Lists first at fixed heights, so the open item always starts on the same row. */}
+        {isListShown && prBlock}
+        {isListShown &&
+          (boardShape.isSideBySide ? (
+            <Box key="side-lists" gap={1}>
+              {actionBlock}
+              {mineBlock}
+            </Box>
+          ) : (
+            <Box key="side-lists" flexDirection="column">
+              {actionBlock}
+              {mineBlock}
+            </Box>
+          ))}
+
+        {shown !== 'list' && detail}
+        {shown === 'detail' && !detail && <Text dimColor>Nothing open. Press m to bring the list back.</Text>}
       </Box>
     )
   })

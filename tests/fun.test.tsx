@@ -36,7 +36,7 @@ const FLAKY_RUNS = JSON.stringify(
   ['SUCCESS', 'FAILURE', 'SUCCESS', 'FAILURE', 'SUCCESS'].map(conclusion => ({ status: 'COMPLETED', conclusion })),
 )
 
-test('reviewers, history, flakiness and what gets said', async () => {
+test('parses reviewers and history, flags flaky workflows, phrases speech', async () => {
   expect(parseReviewers([{ author: { login: 'octocat' }, state: 'APPROVED' }, { author: { login: 'octocat' }, state: 'COMMENTED' }], [{ login: 'hubot' }, { name: 'team' }]))
     .toEqual([{ login: 'octocat', state: 'APPROVED' }, { login: 'hubot', state: 'REQUESTED' }])
   expect(parseReviewers(undefined, undefined)).toBeUndefined()
@@ -53,7 +53,7 @@ test('reviewers, history, flakiness and what gets said', async () => {
   expect(spoken('PR 482', 'green')).toBe('PR 482 is green')
 })
 
-test('history, reviewers and avatars show on the board', async ($, on) => {
+test('PR detail shows history, reviewers and avatars', async ($, on) => {
   const ran: string[][] = []
   on('process.run', async (_$, e) => {
     const argv = e.argv.map(String)
@@ -77,7 +77,7 @@ test('history, reviewers and avatars show on the board', async ($, on) => {
   await ui.unmount()
 })
 
-test('history stays away when turned off', { options: { heatmap: false } }, async ($, on) => {
+test('heatmap off hides history', { options: { heatmap: false } }, async ($, on) => {
   on('process.run', async (_$, e) => ok(e.argv[1] === 'run' ? FLAKY_RUNS : e.argv[1] === 'pr' ? prJson() : ''))
   await $.command.run({ command: 'pulse-pr', args: PR_URL } as never)
   const ui = await $.ui.mount(pane)
@@ -98,7 +98,7 @@ test('sounds and speech are off by default', async ($, on) => {
   expect(heard).toEqual([])
 })
 
-test('with sounds and speech on, a green PR chimes and is announced', { options: { sounds: true, speech: true } }, async ($, on) => {
+test('sounds and speech play on a green PR when enabled', { options: { sounds: true, speech: true } }, async ($, on) => {
   const heard: string[] = []
   let conclusion = 'FAILURE'
   on('process.run', async (_$, e) => ok(e.argv[1] === 'pr' ? prJson('OPEN', conclusion) : ''))
