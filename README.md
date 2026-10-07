@@ -62,8 +62,18 @@ Buttons only appear when they apply. gh-pulse polls every 15 seconds; your open 
 | --- | --- |
 | `/pulse` | Open the board |
 | `/pulse-pr [number\|url]` | Track a PR; blank for the current branch's PR |
-| `/pulse-release [tag\|workflow.yml]` | Track a tag's runs, a workflow's latest run, or (blank) the latest release |
+| `/pulse-release [owner/repo] [tag\|workflow.yml\|run id]` | Track a tag's runs, a workflow's latest run, one run, or (blank) the latest release. Add `owner/repo` (or `-R owner/repo`) for another repo, or paste a GitHub Actions run, workflow or release URL |
 | `/pulse-clear` | Stop tracking everything |
+
+Any repo you can see with `gh` works, wherever Claude is running:
+
+```
+/pulse-release acme/infra deploy.yml
+/pulse-release https://github.com/acme/infra/actions/runs/123456789
+/pulse-release acme/infra            # latest release, or latest run if it has none
+```
+
+PRs in other repos track by URL: `/pulse-pr https://github.com/acme/infra/pull/42`. When Claude runs `gh workflow run` or `gh release create` with `-R`, that repo is followed too.
 
 ## Settings
 

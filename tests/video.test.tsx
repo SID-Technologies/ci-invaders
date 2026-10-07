@@ -1,7 +1,7 @@
 import type { RenderPropsOf } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 
-import { cleanLog, fixPrompt, parseActionsUrl, plannedJobs, withWaitingJobs } from '../hooks/lib'
+import { actionsTarget, cleanLog, fixPrompt, parseActionsUrl, plannedJobs, repoFlag, withWaitingJobs } from '../hooks/lib'
 import {
   BOOM_FRAMES,
   CONFETTI_FRAMES,
@@ -293,4 +293,59 @@ test('waiting jobs are counted before GitHub lists them', async () => {
   expect(withWaitingJobs(later, planned, true)).toHaveLength(3)
   // A finished run never waits on anything.
   expect(withWaitingJobs(started, planned, false)).toHaveLength(1)
+})
+
+test('actions targets in other repos', async () => {
+  expect(actionsTarget('')).toEqual({ repo: undefined })
+  expect(actionsTarget('v1.2.0')).toEqual({ repo: undefined, tag: 'v1.2.0' })
+  expect(actionsTarget('acme/other')).toEqual({ repo: 'acme/other' })
+  expect(actionsTarget('acme/other deploy.yml')).toEqual({ repo: 'acme/other', workflow: 'deploy.yml' })
+  expect(actionsTarget('v2 -R acme/other')).toEqual({ repo: 'acme/other', tag: 'v2' })
+  expect(actionsTarget('--repo=acme/other 123456789')).toEqual({ repo: 'acme/other', runId: 123456789 })
+  expect(actionsTarget('https://github.com/acme/other/actions/runs/42/job/7')).toEqual({ repo: 'acme/other', runId: 42 })
+  expect(actionsTarget('https://github.com/acme/other/actions/workflows/ship.yaml')).toEqual({ repo: 'acme/other', workflow: 'ship.yaml' })
+  expect(actionsTarget('https://github.com/acme/other/releases/tag/v1%2B1')).toEqual({ repo: 'acme/other', tag: 'v1+1' })
+  expect(actionsTarget('https://github.com/acme/other')).toEqual({ repo: 'acme/other' })
+  expect(repoFlag('gh workflow run ship.yml -R acme/other -f x=1')).toBe('acme/other')
+  expect(repoFlag('gh release create v1 --repo=acme/other')).toBe('acme/other')
+  expect(repoFlag('gh workflow run ship.yml && gh run list -R acme/other')).toBeUndefined()
+})
+
+test('tracks a workflow, a run and a repo with no releases elsewhere', async ($, on) => {
+  const ran: string[] = []
+  on('process.run', async (_$, e) => {
+    const argv = e.argv.map(String)
+    ran.push(argv.join(' '))
+    const run = { databaseId: 42, workflowName: 'deploy', displayTitle: 'ship it', url: 'https://github.com/acme/other/actions/runs/42', status: 'IN_PROGRESS', conclusion: '', headBranch: 'main' }
+    if (argv[1] === 'release') return { value: { exitCode: 1, stdout: '', stderr: 'release not found', isStdoutTruncated: false, isStderrTruncated: false } }
+    if (argv[1] === 'run' && argv[2] === 'list') return ok(JSON.stringify([run]))
+    if (argv[1] === 'run' && argv[2] === 'view' && argv.includes('jobs')) return ok(JSON.stringify({ jobs: [] }))
+    if (argv[1] === 'run' && argv[2] === 'view') return ok(JSON.stringify(run))
+    return ok('')
+  })
+  await $.command.run({ command: 'pulse-release', args: 'acme/other deploy.yml' } as never)
+  expect(ran).toContain('gh run list --json databaseId,name,workflowName,displayTitle,url,status,conclusion,headBranch,startedAt,updatedAt,attempt -R acme/other --workflow deploy.yml --limit 1')
+
+  await $.command.run({ command: 'pulse-release', args: 'https://github.com/acme/other/actions/runs/42' } as never)
+  expect(ran.some(line => line.startsWith('gh run view 42 --json databaseId') && line.endsWith('-R acme/other'))).toBe(true)
+
+  const latest = (await $.command.run({ command: 'pulse-release', args: 'acme/other' } as never)) as { text?: string }
+  expect(latest.text).toMatch(/^Tracking latest run/)
+
+  const ui = await $.ui.mount(pane())
+  expect(await ui.find({ type: 'Button', key: 'section:actions', text: /^ACTIONS · .* of 3/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('auto-tracks a workflow Claude runs in another repo', async ($, on) => {
+  const ran: string[] = []
+  on('process.run', async (_$, e) => {
+    const argv = e.argv.map(String)
+    ran.push(argv.join(' '))
+    if (argv[1] === 'run' && argv[2] === 'list') return ok('[]')
+    return ok('')
+  })
+  on('tool.call', { tool: 'Bash' }, async () => ({ result: { stdout: '', stderr: '', interrupted: false }, text: '' }) as never)
+  await $.tool.call({ tool: 'Bash', command: 'gh workflow run ship.yml -R acme/other', description: 'Ship' })
+  expect(ran.some(line => line.startsWith('gh run list') && line.includes('-R acme/other --workflow ship.yml'))).toBe(true)
 })

@@ -205,7 +205,53 @@ export function parseJobs(json: string): Job[] {
 // ── Finding things in Bash output ───────────────────────────────────────
 
 export const PR_URL = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/
-export const RELEASE_URL = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/releases\/tag\/([^\s"'<>]+)/
+export const RELEASE_URL = /https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/releases\/tag\/([^\s"'<>]+)/
+
+export type ActionsTarget = { repo?: string; tag?: string; workflow?: string; runId?: number }
+
+const REPO = /^[\w.-]+\/[\w.-]+$/
+const GITHUB = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)(?:\/(.*))?$/
+
+// What /pulse-release was given: a tag, a workflow file, a run, or a repo's
+// latest release, each optionally in another repo (`owner/repo`, `-R`, or a URL).
+export function actionsTarget(arg: string): ActionsTarget {
+  const tokens = arg.trim().split(/\s+/).filter(Boolean)
+  let repo: string | undefined
+  const rest: string[] = []
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i] ?? ''
+    if (token === '-R' || token === '--repo') repo = tokens[++i]
+    else if (token.startsWith('--repo=')) repo = token.slice('--repo='.length)
+    else rest.push(token)
+  }
+
+  const url = GITHUB.exec(rest[0] ?? '')
+  if (url?.[1]) {
+    const name = url[1].replace(/\.git$/, '')
+    const path = (url[2] ?? '').split(/[?#]/)[0] ?? ''
+    const run = /^actions\/runs\/(\d+)/.exec(path)?.[1]
+    if (run) return { repo: name, runId: Number(run) }
+    const workflow = /^actions\/workflows\/([^/]+\.ya?ml)/.exec(path)?.[1]
+    if (workflow) return { repo: name, workflow }
+    const tag = /^releases\/tag\/(.+)$/.exec(path)?.[1]
+    if (tag) return { repo: name, tag: decodeURIComponent(tag) }
+    return { repo: name }
+  }
+
+  // `owner/repo` first, then what to track in it. Alone, it means that repo.
+  if (!repo && rest.length > 0 && REPO.test(rest[0] ?? '')) repo = rest.shift()
+  const what = rest[0]
+  if (!what) return { repo }
+  if (/\.ya?ml$/.test(what)) return { repo, workflow: what }
+  if (/^\d{6,}$/.test(what)) return { repo, runId: Number(what) }
+  return { repo, tag: what }
+}
+
+// The repo a gh command was pointed at with -R / --repo.
+export function repoFlag(command: string): string | undefined {
+  const m = /(?:^|\s)(?:-R|--repo)(?:\s+|=)['"]?([\w.-]+\/[\w.-]+)/.exec(command.split(/&&|;|\|/)[0] ?? '')
+  return m?.[1]
+}
 
 export function isPrCreate(command: string): boolean {
   return /\bgh\s+pr\s+create\b/.test(command)

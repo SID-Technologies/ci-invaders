@@ -8,6 +8,7 @@ import {
   RELEASE_URL,
   SOUND_FOR,
   SPINNER_EVERY,
+  actionsTarget,
   byUrgency,
   cells,
   ciContext,
@@ -38,6 +39,7 @@ import {
   prToast,
   prTransition,
   readSettings,
+  repoFlag,
   releaseInvaders,
   releaseItems,
   releaseState,
@@ -209,28 +211,47 @@ async function withJobs($: $, run: Run, previous: Run | undefined, repo: string 
 
 async function fetchRelease($: $, release: Release): Promise<Release> {
   const args = ['run', 'list', '--json', RUN_FIELDS, ...inRepo(release.repo)]
-  if (release.workflow) args.push('--workflow', release.workflow, '--limit', '1')
+  if (release.runId) args.splice(0, 2, 'run', 'view', String(release.runId))
+  else if (release.workflow) args.push('--workflow', release.workflow, '--limit', '1')
   else if (release.tag) args.push('--branch', release.tag, '--limit', '10')
   else args.push('--limit', '1')
 
-  const found = parseRuns(await gh($, args))
+  const out = await gh($, args)
+  const found = parseRuns(release.runId ? `[${out}]` : out)
   const runs = await Promise.all(
     found.map(run => withJobs($, run, release.runs.find(old => old.id === run.id), release.repo)),
   )
   return { ...release, runs, error: undefined }
 }
 
-// A tag, a workflow file, or (empty) the latest release.
-async function resolveRelease($: $, arg: string): Promise<Release> {
-  const trimmed = arg.trim()
-  const repo = await currentRepo($)
-  if (/\.ya?ml$/.test(trimmed)) {
-    return { key: `wf:${repo}:${trimmed}`, label: trimmed.replace(/\.ya?ml$/, ''), repo, workflow: trimmed, runs: [] }
+// A tag, a workflow file, a run, or (empty) the latest release; in this repo
+// or another one. See actionsTarget for the forms.
+async function resolveRelease($: $, arg: string, inRepoName?: string): Promise<Release> {
+  const target = actionsTarget(arg)
+  const isElsewhere = Boolean(target.repo ?? inRepoName)
+  const repo = target.repo ?? inRepoName ?? (await currentRepo($))
+  if (target.runId) {
+    const raw = JSON.parse(
+      await gh($, ['run', 'view', String(target.runId), '--json', 'workflowName,url', ...inRepo(repo)]),
+    ) as { workflowName?: string; url?: string }
+    const label = `${raw.workflowName ?? 'run'} ${target.runId}`
+    return { key: `run:${repo}:${target.runId}`, label, repo, runId: target.runId, url: raw.url, runs: [] }
   }
-  const args = ['release', 'view', '--json', 'tagName,url']
-  if (trimmed) args.splice(2, 0, trimmed)
-  const raw = JSON.parse(await gh($, args)) as { tagName?: string; url?: string }
-  const tag = raw.tagName ?? trimmed
+  if (target.workflow) {
+    const label = target.workflow.replace(/\.ya?ml$/, '')
+    return { key: `wf:${repo}:${target.workflow}`, label, repo, workflow: target.workflow, runs: [] }
+  }
+  const args = ['release', 'view', '--json', 'tagName,url', ...inRepo(isElsewhere ? repo : undefined)]
+  if (target.tag) args.splice(2, 0, target.tag)
+  let raw: { tagName?: string; url?: string }
+  try {
+    raw = JSON.parse(await gh($, args)) as { tagName?: string; url?: string }
+  } catch (error) {
+    // A repo with no releases: follow its latest run instead.
+    if (target.tag || !target.repo) throw error
+    return { key: `latest:${repo}`, label: 'latest run', repo, runs: [] }
+  }
+  const tag = raw.tagName ?? target.tag ?? ''
   return { key: `tag:${repo}:${tag}`, label: tag, repo, tag, url: raw.url, runs: [] }
 }
 
@@ -833,8 +854,8 @@ const COMMANDS = [
   { name: 'pulse-pr', description: 'gh-pulse: track a PR (number, URL, or current branch)', argumentHint: '[pr]' },
   {
     name: 'pulse-release',
-    description: 'gh-pulse: track release pipelines (tag, workflow .yml, or latest release)',
-    argumentHint: '[tag|workflow.yml]',
+    description: 'gh-pulse: track Actions runs (tag, workflow .yml, run, or latest release; any repo)',
+    argumentHint: '[owner/repo] [tag|workflow.yml|run id|url]',
   },
   { name: 'pulse-clear', description: 'gh-pulse: stop tracking everything' },
 ] as const
@@ -930,9 +951,9 @@ export const register: Register = (on, options) => {
           $.ui.toast(`Watching PR #${pr.number} · /pulse for the board`)
         }
       } else if (isReleaseCreate(e.command)) {
-        const tag = RELEASE_URL.exec(output)?.[1]
-        if (tag) {
-          const release = await trackRelease($, await resolveRelease($, decodeURIComponent(tag)))
+        const found = RELEASE_URL.exec(output)
+        if (found?.[1] && found[2]) {
+          const release = await trackRelease($, await resolveRelease($, decodeURIComponent(found[2]), found[1]))
           $.ui.toast(`Watching ${release.label} pipelines`)
         }
       } else if (/\bgit\s+push\b/.test(e.command)) {
@@ -948,7 +969,7 @@ export const register: Register = (on, options) => {
       } else {
         const workflow = workflowRun(e.command)
         if (workflow) {
-          const release = await trackRelease($, await resolveRelease($, workflow))
+          const release = await trackRelease($, await resolveRelease($, workflow, repoFlag(e.command)))
           $.ui.toast(`Watching ${release.label}`)
         }
       }
