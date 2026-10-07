@@ -56,6 +56,7 @@ export type Release = {
   repo?: string // owner/name; older saved releases lack it and use the current repo
   workflow?: string
   tag?: string
+  runId?: number // one specific run
   url?: string
   runs: Run[]
   error?: string
