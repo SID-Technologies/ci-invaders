@@ -107,6 +107,10 @@ types/index.d.ts     the $.state contract
 tests/               claude plugin test suites
 ```
 
+## Releasing
+
+Every merge to `main` is a release. The Release workflow works out the next version from the PR titles merged since the last tag (`feat: …` bumps minor, `fix: …` and anything else bump patch, `feat!: …` or `BREAKING CHANGE` bumps major), commits it to `.claude-plugin/plugin.json`, tags `gh-pulse--v<version>` and publishes a GitHub release. Put `[skip release]` in the merge commit to skip one, or run the workflow by hand to choose the bump.
+
 ## License
 
 [MIT](LICENSE)

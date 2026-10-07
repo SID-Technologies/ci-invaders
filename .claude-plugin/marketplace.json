@@ -10,8 +10,7 @@
     {
       "name": "gh-pulse",
       "source": "./",
-      "description": "PR checks and GitHub Actions runs, live in Claude Code. Failing logs one key from Claude, and Space Invaders for your pipelines.",
-      "version": "0.1.0"
+      "description": "PR checks and GitHub Actions runs, live in Claude Code. Failing logs one key from Claude, and Space Invaders for your pipelines."
     }
   ]
 }
