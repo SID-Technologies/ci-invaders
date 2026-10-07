@@ -300,9 +300,19 @@ export function invadersFrame(args: { invaders: readonly Invader[]; frame: numbe
     ship.fx = formationX(count, frame, W)
     ship.dir = Math.floor(frame / 2) % (Math.max(1, room) * 2) < room ? 1 : -1
   }
+  // Like the arcade: the formation bounces off the edges at its outermost
+  // invaders still on screen, not at the columns already shot away.
+  const isShown = (inv: Invader) => (inv.state === 'pass' || inv.state === 'skip' ? ago(inv) < HIT_FRAMES : true)
+  const columns = invaders.filter(isShown).map(inv => inv.slot % COLUMNS)
+  const first = columns.length > 0 ? Math.min(...columns) : 0
+  const last = columns.length > 0 ? Math.max(...columns) : Math.min(count, COLUMNS) - 1
+  const minFx = 1 - first * STEP_X
+  const maxFx = Math.max(minFx, W - 6 - last * STEP_X)
   // `ahead` frames from now, for leading a shot.
   const homeOf = (slot: number, ahead = 0) => ({
-    x: Math.floor(Math.max(1, Math.min(1 + room, ship.fx + ship.dir * 0.5 * ahead))) + (slot % COLUMNS) * STEP_X,
+    x:
+      Math.floor(ahead === 0 ? ship.fx : Math.max(minFx, Math.min(maxFx, ship.fx + ship.dir * 0.5 * ahead))) +
+      (slot % COLUMNS) * STEP_X,
     y: TOP + Math.floor(slot / COLUMNS) * STEP_Y,
   })
   const placeOf = (inv: Invader & { slot: number }) => {
@@ -335,8 +345,11 @@ export function invadersFrame(args: { invaders: readonly Invader[]; frame: numbe
   ship.x = Math.max(2, Math.min(W - 3, ship.x))
   for (let f = ship.at + 1; f <= frame; f++) {
     ship.fx += ship.dir * 0.5
-    if (ship.fx >= 1 + room) [ship.fx, ship.dir] = [1 + room, -1]
-    if (ship.fx <= 1) [ship.fx, ship.dir] = [1, 1]
+    // Past an edge (the board shrank, or a new outer column appeared): turn
+    // around and walk back in rather than jumping.
+    if (maxFx === minFx) ship.fx = minFx
+    else if (ship.fx >= maxFx) ship.dir = -1
+    else if (ship.fx <= minFx) ship.dir = 1
     for (const shot of ship.shots) shot.y -= SHOT_SPEED
     for (const hit of ship.hits) hit.age++
     ship.hits = ship.hits.filter(hit => hit.age < FLASH_FRAMES)

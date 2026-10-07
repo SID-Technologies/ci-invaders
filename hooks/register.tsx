@@ -1319,7 +1319,7 @@ export const register: Register = (on, options) => {
           {Raster && isCelebrating(party, f) && party.kind === 'merged' && party.key === prKey(pr) && (
             <Raster
               key="confetti"
-              {...toCells(confettiFrame(pr.number, f - party.startFrame, Math.min(inner, 120), 12))}
+              {...toCells(confettiFrame(pr.number, f - party.startFrame, inner, 12))}
             />
           )}
           <Box flexDirection="column">
@@ -1470,7 +1470,7 @@ export const register: Register = (on, options) => {
                     doneAt: doneAt.get(`${r.key}|${job.key}`),
                   })),
                   frame: f,
-                  width: Math.min(inner, 120),
+                  width: inner,
                   ship: shipFor(r.key),
                 }),
               )}

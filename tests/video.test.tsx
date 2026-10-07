@@ -385,3 +385,25 @@ test('a link goes to the right tracker whichever command gets it', async ($, on)
   await ui.press({ key: 'refresh' })
   await ui.unmount()
 })
+
+const RUNNING = 0xfacc15 // PAL.a
+
+test('the formation bounces at its outermost live invaders', async () => {
+  const ship = newShip()
+  // Six columns; the outer two on each side already shot down long ago.
+  const invaders = [0, 1, 2, 3, 4, 5].map(slot => ({ state: slot === 2 || slot === 3 ? 'pending' : 'pass', slot, doneAt: slot === 2 || slot === 3 ? undefined : 0 }) as const)
+  const lefts: number[] = []
+  const rights: number[] = []
+  for (let frame = 100; frame < 700; frame++) {
+    const p = invadersFrame({ invaders, frame, width: 80, ship })
+    // Live invaders sit in rows TOP..TOP+3; find the alien pixels' extent.
+    const xs: number[] = []
+    for (let y = 1; y < 5; y++) for (let x = 0; x < 80; x++) if (p.data[y * p.width + x] === RUNNING) xs.push(x)
+    if (xs.length > 0) {
+      lefts.push(Math.min(...xs))
+      rights.push(Math.max(...xs))
+    }
+  }
+  expect(Math.min(...lefts)).toBeLessThanOrEqual(2)
+  expect(Math.max(...rights)).toBeGreaterThanOrEqual(77)
+})
