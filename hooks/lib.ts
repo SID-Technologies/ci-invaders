@@ -247,6 +247,16 @@ export function actionsTarget(arg: string): ActionsTarget {
   return { repo, tag: what }
 }
 
+// A pasted link or reference: a PR, something in Actions, or neither.
+// PR links keep working with /checks, /files and the like on the end.
+export function pastedLink(arg: string): { kind: 'pr'; url: string } | { kind: 'actions' } | undefined {
+  const text = arg.trim()
+  const pr = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)/.exec(text) ?? /^([\w.-]+\/[\w.-]+)#(\d+)$/.exec(text)
+  if (pr) return { kind: 'pr', url: `https://github.com/${pr[1]}/pull/${pr[2]}` }
+  if (/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/(actions|releases)(\/|$)/.test(text)) return { kind: 'actions' }
+  return undefined
+}
+
 // The repo a gh command was pointed at with -R / --repo.
 export function repoFlag(command: string): string | undefined {
   const m = /(?:^|\s)(?:-R|--repo)(?:\s+|=)['"]?([\w.-]+\/[\w.-]+)/.exec(command.split(/&&|;|\|/)[0] ?? '')

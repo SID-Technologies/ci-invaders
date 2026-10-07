@@ -33,6 +33,7 @@ import {
   parseJobs,
   parseOpenPrs,
   parsePr,
+  pastedLink,
   parseRuns,
   plannedJobs,
   prState,
@@ -847,11 +848,30 @@ async function askForReview($: $, url: string): Promise<void> {
   $.ui.toast(filled.isFilled ? 'Review prompt ready: esc to the prompt, then Enter' : "Couldn't fill the prompt box")
 }
 
+async function trackFromCommand($: $, arg: string, asked: 'pr' | 'actions'): Promise<string> {
+  const link = pastedLink(arg)
+  if ((link?.kind ?? asked) === 'pr') {
+    try {
+      const pr = await trackPr($, link?.kind === 'pr' ? link.url : arg.trim())
+      return `Tracking PR #${pr.number}: ${pr.title}\n${pr.url}`
+    } catch (error) {
+      return `Couldn't find that PR: ${message(error)}`
+    }
+  }
+  try {
+    const release = await trackRelease($, await resolveRelease($, arg))
+    const runs = release.runs.map(r => `  ${glyph(r.state)} ${r.name}  ${r.url}`).join('\n')
+    return `Tracking ${release.label}${release.url ? ` (${release.url})` : ''}\n${runs || '  No pipeline runs yet; watching for them.'}`
+  } catch (error) {
+    return `Couldn't find that in Actions: ${message(error)}`
+  }
+}
+
 // ── Hooks ───────────────────────────────────────────────────────────────
 
 const COMMANDS = [
-  { name: 'pulse', description: 'gh-pulse: open the PR + release board' },
-  { name: 'pulse-pr', description: 'gh-pulse: track a PR (number, URL, or current branch)', argumentHint: '[pr]' },
+  { name: 'pulse', description: 'gh-pulse: open the board, or track a pasted PR or Actions link', argumentHint: '[link]' },
+  { name: 'pulse-pr', description: 'gh-pulse: track a PR (number, URL, owner/repo#n, or current branch)', argumentHint: '[pr]' },
   {
     name: 'pulse-release',
     description: 'gh-pulse: track Actions runs (tag, workflow .yml, run, or latest release; any repo)',
@@ -898,37 +918,33 @@ export const register: Register = (on, options) => {
     return result
   })
 
-  on('command.run', { command: 'pulse' }, async $ => {
+  on('command.run', { command: 'pulse' }, async ($, e) => {
+    // `/pulse <link>` tracks it first.
+    let tracked = ''
+    if (e.args.trim()) {
+      const blocked = await needsSetup($)
+      if (blocked) return { text: blocked }
+      if (!pastedLink(e.args)) return { text: 'Paste a GitHub PR, Actions run, workflow or release link, or use /pulse-pr and /pulse-release.' }
+      tracked = `${await trackFromCommand($, e.args, 'pr')}\n`
+    }
     await update($, isBandHidden, () => false)
     void checkGh($)
     const opened = await openBoard($)
     void poll($)
-    return { text: opened.isPlaced ? 'Board open.' : 'Board queued: widen the terminal to see it.' }
+    return { text: tracked + (opened.isPlaced ? 'Board open.' : 'Board queued: widen the terminal to see it.') }
   })
 
+  // A pasted link goes where it belongs, whichever command it was given to.
   on('command.run', { command: 'pulse-pr' }, async ($, e) => {
     const blocked = await needsSetup($)
     if (blocked) return { text: blocked }
-    try {
-      const pr = await trackPr($, e.args.trim())
-      return { text: `Tracking PR #${pr.number}: ${pr.title}\n${pr.url}` }
-    } catch (error) {
-      return { text: `Couldn't find that PR: ${message(error)}` }
-    }
+    return { text: await trackFromCommand($, e.args, 'pr') }
   })
 
   on('command.run', { command: 'pulse-release' }, async ($, e) => {
     const blocked = await needsSetup($)
     if (blocked) return { text: blocked }
-    try {
-      const release = await trackRelease($, await resolveRelease($, e.args))
-      const runs = release.runs.map(r => `  ${glyph(r.state)} ${r.name}  ${r.url}`).join('\n')
-      return {
-        text: `Tracking ${release.label}${release.url ? ` (${release.url})` : ''}\n${runs || '  No pipeline runs yet; watching for them.'}`,
-      }
-    } catch (error) {
-      return { text: `Couldn't find that release: ${message(error)}` }
-    }
+    return { text: await trackFromCommand($, e.args, 'actions') }
   })
 
   on('command.run', { command: 'pulse-clear' }, async $ => {

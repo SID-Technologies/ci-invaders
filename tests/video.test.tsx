@@ -1,7 +1,7 @@
 import type { RenderPropsOf } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 
-import { actionsTarget, cleanLog, fixPrompt, parseActionsUrl, plannedJobs, repoFlag, withWaitingJobs } from '../hooks/lib'
+import { actionsTarget, cleanLog, fixPrompt, parseActionsUrl, pastedLink, plannedJobs, repoFlag, withWaitingJobs } from '../hooks/lib'
 import {
   BOOM_FRAMES,
   CONFETTI_FRAMES,
@@ -348,4 +348,40 @@ test('auto-tracks a workflow Claude runs in another repo', async ($, on) => {
   on('tool.call', { tool: 'Bash' }, async () => ({ result: { stdout: '', stderr: '', interrupted: false }, text: '' }) as never)
   await $.tool.call({ tool: 'Bash', command: 'gh workflow run ship.yml -R acme/other', description: 'Ship' })
   expect(ran.some(line => line.startsWith('gh run list') && line.includes('-R acme/other --workflow ship.yml'))).toBe(true)
+})
+
+test('pasted links are recognised', async () => {
+  expect(pastedLink('https://github.com/acme/rocket/pull/482/checks')).toEqual({ kind: 'pr', url: PR_URL })
+  expect(pastedLink(' acme/rocket#482 ')).toEqual({ kind: 'pr', url: PR_URL })
+  expect(pastedLink('https://github.com/acme/rocket/actions/runs/9')).toEqual({ kind: 'actions' })
+  expect(pastedLink('https://github.com/acme/rocket/releases/tag/v1')).toEqual({ kind: 'actions' })
+  expect(pastedLink('482')).toBeUndefined()
+  expect(pastedLink('https://github.com/acme/rocket/issues/3')).toBeUndefined()
+})
+
+test('a link goes to the right tracker whichever command gets it', async ($, on) => {
+  const ran: string[] = []
+  on('ui.open', async () => ({ value: { isPlaced: true } }))
+  on('process.run', async (_$, e) => {
+    const argv = e.argv.map(String)
+    ran.push(argv.join(' '))
+    const run = { databaseId: 9, workflowName: 'release', displayTitle: 'v1', url: 'https://github.com/acme/rocket/actions/runs/9', status: 'IN_PROGRESS', conclusion: '', headBranch: 'main' }
+    if (argv[1] === 'pr' && argv[2] === 'view') return ok(prJson('OPEN'))
+    if (argv[1] === 'run' && argv[2] === 'view' && argv.includes('jobs')) return ok(JSON.stringify({ jobs: [] }))
+    if (argv[1] === 'run' && argv[2] === 'view') return ok(JSON.stringify(run))
+    return ok('[]')
+  })
+  const asPr = (await $.command.run({ command: 'pulse-pr', args: 'https://github.com/acme/rocket/actions/runs/9' } as never)) as { text?: string }
+  expect(asPr.text).toMatch(/^Tracking release 9/)
+  const asRelease = (await $.command.run({ command: 'pulse-release', args: 'https://github.com/acme/rocket/pull/482/files' } as never)) as { text?: string }
+  expect(asRelease.text).toMatch(/^Tracking PR #482/)
+  expect(ran).toContain(`gh pr view ${PR_URL} --json ${ran.find(line => line.startsWith(`gh pr view ${PR_URL}`))?.split(' --json ')[1]}`)
+  const board = (await $.command.run({ command: 'pulse', args: 'acme/rocket#482' } as never)) as { text?: string }
+  expect(board.text).toMatch(/^Tracking PR #482[\s\S]*Board/)
+  const nonsense = (await $.command.run({ command: 'pulse', args: 'hello' } as never)) as { text?: string }
+  expect(nonsense.text).toMatch(/^Paste a GitHub/)
+  // Let the refresh /pulse started finish before the test ends.
+  const ui = await $.ui.mount(pane())
+  await ui.press({ key: 'refresh' })
+  await ui.unmount()
 })
