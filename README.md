@@ -60,8 +60,8 @@ Buttons only appear when they apply. gh-pulse polls every 15 seconds; your open 
 
 | Command | Does |
 | --- | --- |
-| `/pulse` | Open the board |
-| `/pulse-pr [number\|url]` | Track a PR; blank for the current branch's PR |
+| `/pulse [link]` | Open the board. With a pasted PR or Actions link, track it first |
+| `/pulse-pr [number\|url\|owner/repo#n]` | Track a PR; blank for the current branch's PR |
 | `/pulse-release [owner/repo] [tag\|workflow.yml\|run id]` | Track a tag's runs, a workflow's latest run, one run, or (blank) the latest release. Add `owner/repo` (or `-R owner/repo`) for another repo, or paste a GitHub Actions run, workflow or release URL |
 | `/pulse-clear` | Stop tracking everything |
 
@@ -73,7 +73,7 @@ Any repo you can see with `gh` works, wherever Claude is running:
 /pulse-release acme/infra            # latest release, or latest run if it has none
 ```
 
-PRs in other repos track by URL: `/pulse-pr https://github.com/acme/infra/pull/42`. When Claude runs `gh workflow run` or `gh release create` with `-R`, that repo is followed too.
+Paste any GitHub link into any of the three commands and it goes to the right list: a PR link (including `/checks` or `/files` pages) is tracked as a PR, an Actions run, workflow or release link as an Action. PRs in other repos track by URL: `/pulse-pr https://github.com/acme/infra/pull/42`. When Claude runs `gh workflow run` or `gh release create` with `-R`, that repo is followed too.
 
 ## Settings
 
@@ -106,6 +106,10 @@ hooks/sprites.ts     half-block pixel art: confetti and Space Invaders
 types/index.d.ts     the $.state contract
 tests/               claude plugin test suites
 ```
+
+## Releasing
+
+Every merge to `main` is a release. The Release workflow works out the next version from the PR titles merged since the last tag (`feat: …` bumps minor, `fix: …` and anything else bump patch, `feat!: …` or `BREAKING CHANGE` bumps major), commits it to `.claude-plugin/plugin.json`, tags `gh-pulse--v<version>` and publishes a GitHub release. Put `[skip release]` in the merge commit to skip one, or run the workflow by hand to choose the bump.
 
 ## License
 

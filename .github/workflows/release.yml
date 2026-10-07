@@ -1,12 +1,22 @@
 name: Release
 
-# Bump "version" in .claude-plugin/plugin.json and marketplace.json, merge to
-# main, and this tags gh-pulse--v<version> and publishes a GitHub release.
+# Every merge to main is a release. The next version comes from what was
+# merged since the last tag, which with squash merges is the PR titles: a
+# breaking change (`feat!:` or "BREAKING CHANGE") bumps major, any `feat:`
+# bumps minor, anything else patch. The workflow commits the
+# new version to plugin.json on main, tags gh-pulse--v<version> and publishes a
+# GitHub release. Put [skip release] in a commit message to merge without one,
+# or run it by hand to pick the bump.
 on:
   push:
     branches: [main]
-    paths: ['.claude-plugin/**']
   workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump
+        type: choice
+        options: [auto, patch, minor, major]
+        default: auto
 
 permissions:
   contents: write
@@ -15,6 +25,12 @@ concurrency: release
 
 jobs:
   release:
+    # The version commit this workflow pushes doesn't start another run
+    # (pushes made with GITHUB_TOKEN never do); the check is belt and braces.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (!startsWith(github.event.head_commit.message, 'chore(release):') &&
+       !contains(github.event.head_commit.message, '[skip release]'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,24 +43,53 @@ jobs:
       - run: claude plugin validate . --strict
       - run: claude plugin test .
 
-      - id: version
+      - id: next
+        env:
+          BUMP: ${{ inputs.bump || 'auto' }}
         run: |
-          version=$(jq -r .version .claude-plugin/plugin.json)
-          tag="gh-pulse--v$version"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          if git rev-parse -q --verify "refs/tags/$tag" > /dev/null; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "$tag already exists, nothing to release"
+          last=$(git describe --tags --match 'gh-pulse--v*' --abbrev=0 2>/dev/null || true)
+          if [ -z "$last" ]; then
+            echo "No release tag yet; tag the current version first." >&2
+            exit 1
+          fi
+          if [ "$(git rev-list "$last..HEAD" --count)" = 0 ]; then
+            echo "Nothing since $last."
+            exit 0
           fi
 
-      - if: steps.version.outputs.exists != 'true'
+          # Subjects and bodies, so "* feat: ..." lists in a merge body count too.
+          log=$(git log --format='%s%n%b' "$last..HEAD")
+          bump=$BUMP
+          if [ "$bump" = auto ]; then
+            if echo "$log" | grep -qE '^(\* )?[a-z]+(\([^)]*\))?!:|BREAKING CHANGE'; then bump=major
+            elif echo "$log" | grep -qE '^(\* )?feat(\([^)]*\))?:'; then bump=minor
+            else bump=patch
+            fi
+          fi
+
+          IFS=. read -r major minor patch <<< "${last#gh-pulse--v}"
+          case $bump in
+            major) version="$((major + 1)).0.0" ;;
+            minor) version="$major.$((minor + 1)).0" ;;
+            patch) version="$major.$minor.$((patch + 1))" ;;
+          esac
+          echo "$last -> v$version ($bump)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - if: steps.next.outputs.version
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.next.outputs.version }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          jq --arg v "$VERSION" '.version = $v' .claude-plugin/plugin.json > plugin.json.tmp
+          mv plugin.json.tmp .claude-plugin/plugin.json
+          git commit -am "chore(release): gh-pulse v$VERSION"
+          # Something merged while this ran: go on top of it.
+          git pull --rebase origin main
+          git push origin HEAD:main
+
           claude plugin tag --push -m "gh-pulse v%s"
-          gh release create "${{ steps.version.outputs.tag }}" \
-            --title "gh-pulse v${{ steps.version.outputs.version }}" \
-            --generate-notes
+          gh release create "gh-pulse--v$VERSION" --title "gh-pulse v$VERSION" --generate-notes
