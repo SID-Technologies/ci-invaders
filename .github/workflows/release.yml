@@ -1,15 +1,12 @@
 name: Release
 
-# Every merge to main is a release. The next version comes from what was
-# merged since the last tag, which with squash merges is the PR titles: a
-# breaking change (`feat!:` or "BREAKING CHANGE") bumps major, any `feat:`
-# bumps minor, anything else patch. The workflow commits the
-# new version to plugin.json on main, tags gh-pulse--v<version> and publishes a
-# GitHub release. Put [skip release] in a commit message to merge without one,
-# or run it by hand to pick the bump.
+# Run by hand (Actions > Release > Run workflow, or `gh workflow run release.yml`).
+# The next version comes from what was merged since the last tag, which with
+# squash merges is the PR titles: a breaking change (`feat!:` or "BREAKING
+# CHANGE") bumps major, any `feat:` bumps minor, anything else patch. Pick a
+# bump to override that. The workflow commits the new version to plugin.json
+# on main, tags gh-pulse--v<version> and publishes a GitHub release.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       bump:
@@ -25,12 +22,6 @@ concurrency: release
 
 jobs:
   release:
-    # The version commit this workflow pushes doesn't start another run
-    # (pushes made with GITHUB_TOKEN never do); the check is belt and braces.
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (!startsWith(github.event.head_commit.message, 'chore(release):') &&
-       !contains(github.event.head_commit.message, '[skip release]'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -45,7 +36,7 @@ jobs:
 
       - id: next
         env:
-          BUMP: ${{ inputs.bump || 'auto' }}
+          BUMP: ${{ inputs.bump }}
         run: |
           last=$(git describe --tags --match 'gh-pulse--v*' --abbrev=0 2>/dev/null || true)
           if [ -z "$last" ]; then
