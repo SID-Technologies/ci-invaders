@@ -109,7 +109,7 @@ tests/               claude plugin test suites
 
 ## Releasing
 
-Every merge to `main` is a release. The Release workflow works out the next version from the PR titles merged since the last tag (`feat: …` bumps minor, `fix: …` and anything else bump patch, `feat!: …` or `BREAKING CHANGE` bumps major), commits it to `.claude-plugin/plugin.json`, tags `gh-pulse--v<version>` and publishes a GitHub release. Put `[skip release]` in the merge commit to skip one, or run the workflow by hand to choose the bump.
+Run the Release workflow by hand: **Actions > Release > Run workflow**, or `gh workflow run release.yml`. It works out the next version from the PR titles merged since the last tag (`feat: …` bumps minor, `fix: …` and anything else bump patch, `feat!: …` or `BREAKING CHANGE` bumps major), commits it to `.claude-plugin/plugin.json`, tags `gh-pulse--v<version>` and publishes a GitHub release. Choose a bump when you run it to override that: `gh workflow run release.yml -f bump=minor`.
 
 ## License
 
