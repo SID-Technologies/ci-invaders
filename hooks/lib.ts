@@ -834,6 +834,24 @@ export function clip(text: string, width: number): string {
   return width <= 3 ? text.slice(0, width) : `${text.slice(0, width - 3)}...`
 }
 
+// Lay items of these widths into rows no wider than `width`, `gap` apart.
+// Returns each row's item indexes. An item wider than a row gets one to itself.
+export function packRows(widths: readonly number[], width: number, gap: number): number[][] {
+  const rows: number[][] = []
+  let used = 0
+  widths.forEach((w, i) => {
+    const row = rows[rows.length - 1]
+    if (row && used + gap + w <= width) {
+      row.push(i)
+      used += gap + w
+    } else {
+      rows.push([i])
+      used = w
+    }
+  })
+  return rows
+}
+
 // Merged or closed PRs, and releases that finished without failing.
 export function isFinished(item: Pr | Release): boolean {
   if ('checks' in item) return item.state !== 'OPEN'

@@ -28,6 +28,7 @@ import {
   mergeLabel,
   nextRow,
   overall,
+  packRows,
   parseActionsUrl,
   parseHistory,
   parseJobs,
@@ -124,6 +125,25 @@ const CELEBRATION_FRAMES: Record<Celebration['kind'], number> = {
 type Layout = 'both' | 'list' | 'detail'
 const NEXT_LAYOUT = { both: 'list', list: 'detail', detail: 'both' } as const
 const LAYOUT_LABEL = { both: 'List and detail', list: 'List only', detail: 'Detail only' } as const
+
+const ACTION_GAP = 3
+const UNDO_LABEL_MAX = 16
+// Every action at its widest, to reserve the button rows' height.
+const ALL_ACTION_LABELS = [
+  'Refresh',
+  'List and detail',
+  'Fix it',
+  'Rerun failed',
+  'Next log',
+  'Copy log',
+  'Review with Claude',
+  'Open',
+  'Remove',
+  'Clear finished (99)',
+  'Clear',
+  `Undo (${'x'.repeat(UNDO_LABEL_MAX)})`,
+  'Hide keys',
+]
 
 const prs = atom({ plugin: 'gh-pulse', key: 'prs' } as const, [])
 const releases = atom({ plugin: 'gh-pulse', key: 'releases' } as const, [])
@@ -1736,51 +1756,65 @@ export const register: Register = (on, options) => {
       empty: mine.error ?? (mine.prs.length > 0 ? 'All tracked.' : 'None open.'),
     })
 
+    // Laid into rows by hand: a wrapping Box puts its gap between rows too.
+    // The rows always take the height the full set would, so switching items
+    // never moves the lists below.
+    const undoLabel = kept ? `Undo (${clip(kept.label, UNDO_LABEL_MAX)})` : ''
+    const actions = (
+      [
+        ['Refresh', <Button key="refresh" plain dimColor hotkey="r" label="Refresh" onPress={() => showWhile($, 'Refreshing', () => Promise.all([poll($, true), refreshLists($)]))} />],
+        [
+          LAYOUT_LABEL[NEXT_LAYOUT[shown]],
+          <Button key="layout" plain dimColor hotkey="m" label={LAYOUT_LABEL[NEXT_LAYOUT[shown]]} onPress={() => cycleLayout($)} />,
+        ],
+        failingChecks.length > 0 && [
+          'Fix it',
+          <Button key="fix" plain hotkey="f" label="Fix it" onPress={() => showWhile($, 'Reading the failing logs', () => fixIt($, openKey, e.surface))} />,
+        ],
+        (failingChecks.length > 0 || hasFailedRuns) && [
+          'Rerun failed',
+          <Button key="rerun" plain dimColor hotkey="e" label="Rerun failed" onPress={() => showWhile($, 'Rerunning the failed jobs', () => rerunFailed($, openKey))} />,
+        ],
+        failingChecks.length > 1 && [
+          'Next log',
+          <Button key="log" plain dimColor hotkey="l" label="Next log" onPress={() => showWhile($, 'Loading the log', () => nextLog($, openKey))} />,
+        ],
+        failingChecks.length > 0 && ['Copy log', <Button key="copy" plain dimColor hotkey="y" label="Copy log" onPress={() => copyLog($, openKey, e.surface)} />],
+        openPr && openPr.state === 'OPEN' && me && openPr.author && openPr.author !== me && [
+          'Review with Claude',
+          <Button key="ask" plain hotkey="a" label="Review with Claude" onPress={() => askForReview($, openPr.url)} />,
+        ],
+        openKey && ['Open', <Button key="open" plain dimColor hotkey="o" label="Open" onPress={() => openInBrowser($, openKey)} />],
+        removable && ['Remove', <Button key="remove" plain dimColor hotkey="x" label="Remove" onPress={() => untrack($, removable)} />],
+        finishedCount > 0 && [
+          `Clear finished (${finishedCount})`,
+          <Button key="clear-finished" plain dimColor hotkey="d" label={`Clear finished (${finishedCount})`} onPress={() => clearFinished($)} />,
+        ],
+        items.length > 0 && ['Clear', <Button key="clear" plain dimColor hotkey="c" label="Clear" onPress={() => clearAll($)} />],
+        kept && [undoLabel, <Button key="undo" plain hotkey="z" label={undoLabel} onPress={() => undoRemoval($)} />],
+        [
+          isShowingKeys ? 'Hide keys' : 'Keys',
+          <Button key="keys" plain dimColor hotkey="h" label={isShowingKeys ? 'Hide keys' : 'Keys'} onPress={() => update($, isKeysShown, shown => !shown)} />,
+        ],
+      ] as const
+    )
+      .filter(action => action !== false && action !== undefined && action !== '' && action !== null)
+      .map(action => {
+        const [label, button] = action as readonly [string, RenderChildren]
+        return { width: label.length + 3, button } // "k: label"
+      })
+    const actionRows = packRows(actions.map(action => action.width), inner, ACTION_GAP)
+    const actionRowsReserved = packRows(ALL_ACTION_LABELS.map(label => label.length + 3), inner, ACTION_GAP).length
+
     return (
       <Box flexDirection="column" paddingX={1} gap={1}>
         {/* Help on its own line so it never gets truncated. */}
         <Box flexDirection="column">
-          <Box gap={3} flexWrap="wrap">
-            <Button key="refresh" plain dimColor hotkey="r" label="Refresh" onPress={() => showWhile($, 'Refreshing', () => Promise.all([poll($, true), refreshLists($)]))} />
-            <Button
-              key="layout"
-              plain
-              dimColor
-              hotkey="m"
-              label={LAYOUT_LABEL[NEXT_LAYOUT[shown]]}
-              onPress={() => cycleLayout($)}
-            />
-            {failingChecks.length > 0 && (
-              <Button key="fix" plain hotkey="f" label="Fix it" onPress={() => showWhile($, 'Reading the failing logs', () => fixIt($, openKey, e.surface))} />
-            )}
-            {(failingChecks.length > 0 || hasFailedRuns) && (
-              <Button key="rerun" plain dimColor hotkey="e" label="Rerun failed" onPress={() => showWhile($, 'Rerunning the failed jobs', () => rerunFailed($, openKey))} />
-            )}
-            {failingChecks.length > 1 && (
-              <Button key="log" plain dimColor hotkey="l" label="Next log" onPress={() => showWhile($, 'Loading the log', () => nextLog($, openKey))} />
-            )}
-            {failingChecks.length > 0 && (
-              <Button key="copy" plain dimColor hotkey="y" label="Copy log" onPress={() => copyLog($, openKey, e.surface)} />
-            )}
-            {openPr && openPr.state === 'OPEN' && me && openPr.author && openPr.author !== me && (
-              <Button key="ask" plain hotkey="a" label="Review with Claude" onPress={() => askForReview($, openPr.url)} />
-            )}
-            {openKey && <Button key="open" plain dimColor hotkey="o" label="Open" onPress={() => openInBrowser($, openKey)} />}
-            {removable && <Button key="remove" plain dimColor hotkey="x" label="Remove" onPress={() => untrack($, removable)} />}
-            {finishedCount > 0 && (
-              <Button key="clear-finished" plain dimColor hotkey="d" label={`Clear finished (${finishedCount})`} onPress={() => clearFinished($)} />
-            )}
-            {items.length > 0 && <Button key="clear" plain dimColor hotkey="c" label="Clear" onPress={() => clearAll($)} />}
-            {kept && <Button key="undo" plain hotkey="z" label={`Undo (${kept.label})`} onPress={() => undoRemoval($)} />}
-            <Button
-              key="keys"
-              plain
-              dimColor
-              hotkey="h"
-              label={isShowingKeys ? 'Hide keys' : 'Keys'}
-              onPress={() => update($, isKeysShown, shown => !shown)}
-            />
-          </Box>
+          {actionRows.map((row, i) => (
+            <Box key={`actions-${i}`} gap={ACTION_GAP}>
+              {row.map(index => actions[index]!.button)}
+            </Box>
+          ))}
           {doing ? (
             <Text color="yellow" wrap="truncate-end">
               {glyph('pending', f)} {doing}…
@@ -1790,6 +1824,10 @@ export const register: Register = (on, options) => {
               {props.isFocused ? '↑↓ move · enter pin · 1 2 3 lists · h all keys · esc back to prompt' : 'ctrl+x tab or click to use the keyboard'}
             </Text>
           )}
+          {/* Room for the rows other items' buttons need, so the lists below never move. */}
+          {Array.from({ length: Math.max(0, actionRowsReserved - actionRows.length) }, (_, i) => (
+            <Text key={`actions-pad-${i}`}> </Text>
+          ))}
         </Box>
 
         {isShowingKeys && (
