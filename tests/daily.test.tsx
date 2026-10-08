@@ -319,3 +319,24 @@ test('waking up offline keeps the board; signing out shows how to sign in', asyn
   expect(await ui.find({ type: 'Button', key: `item:pr:${PR_URL}` })).toBeDefined()
   await ui.unmount()
 })
+
+test('a board that fails to draw says why and can be reset', async ($, on) => {
+  // A value the board can't read makes the drawing throw.
+  let isBroken = false
+  on('state.get', async (_$, e, next) => (isBroken && e.key === 'cursor' ? { deny: 'cursor unreadable' } : next(e)))
+  on('process.run', fakeGh([]))
+  on('ui.toast' as never, (async () => ({ value: {} })) as never)
+  await $.command.run({ command: 'pulse-pr', args: PR_URL } as never)
+  isBroken = true
+  const ui = await $.ui.mount(pane)
+  expect(await ui.find({ type: 'Text', text: 'The board hit an error while drawing' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /cursor unreadable/ })).toBeDefined()
+  isBroken = false
+  await ui.press({ key: 'reset-board' })
+  expect(await ui.find({ type: 'Button', key: `item:pr:${PR_URL}` })).toBeDefined()
+  await ui.unmount()
+
+  const fine = await $.ui.mount(pane)
+  expect(await fine.find({ type: 'Button', key: `item:pr:${PR_URL}` })).toBeDefined()
+  await fine.unmount()
+})
