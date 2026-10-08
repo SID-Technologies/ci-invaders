@@ -288,3 +288,34 @@ test('upsertBy updates in place, so polling never reorders the lists', () => {
   expect(upsertBy(list, { id: 1, v: 'A' }, one => one.id === 1, 5).map(one => one.v)).toEqual(['A', 'b', 'c'])
   expect(upsertBy(list, { id: 4, v: 'd' }, one => one.id === 4, 3).map(one => one.id)).toEqual([2, 3, 4])
 })
+
+test('waking up offline keeps the board; signing out shows how to sign in', async ($, on) => {
+  let gh: 'up' | 'offline' | 'signed-out' = 'up'
+  const ran: string[][] = []
+  const working = fakeGh(ran, 'SUCCESS')
+  const failed = (stderr: string) => ({ value: { exitCode: 1, stdout: '', stderr, isStdoutTruncated: false, isStderrTruncated: false } })
+  on('process.run', async (s, e) => {
+    const argv = e.argv.map(String)
+    if (gh === 'signed-out' && argv[1] === 'auth') return failed('You are not logged into any GitHub hosts. To log in, run: gh auth login')
+    if (gh === 'offline' && argv[1] !== '--version') return failed('error connecting to api.github.com')
+    return working(s, e)
+  })
+  await $.command.run({ command: 'pulse-pr', args: PR_URL } as never)
+  const ui = await $.ui.mount(pane)
+  expect(await ui.find({ type: 'Button', key: 'section:prs' })).toBeDefined()
+
+  // Lid closed, opened with no network yet: still the board, not "sign in".
+  gh = 'offline'
+  await ui.press({ key: 'refresh' })
+  expect(await ui.find({ type: 'Button', key: 'section:prs' })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'recheck' })).toBeUndefined()
+
+  gh = 'signed-out'
+  await ui.press({ key: 'refresh' })
+  expect(await ui.find({ type: 'Button', key: 'recheck' })).toBeDefined()
+
+  gh = 'up'
+  await ui.press({ key: 'recheck' })
+  expect(await ui.find({ type: 'Button', key: `item:pr:${PR_URL}` })).toBeDefined()
+  await ui.unmount()
+})

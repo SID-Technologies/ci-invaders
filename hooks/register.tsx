@@ -293,7 +293,7 @@ async function currentRepo($: $): Promise<string | undefined> {
 
 // ── Setup ───────────────────────────────────────────────────────────────
 
-async function tryRun($: $, argv: string[]): Promise<{ exitCode: number; stdout: string } | undefined> {
+async function tryRun($: $, argv: string[]): Promise<{ exitCode: number; stdout: string; stderr: string } | undefined> {
   try {
     return await $.process.run(argv, { timeoutMs: 10_000 })
   } catch {
@@ -309,12 +309,19 @@ async function detectOs($: $): Promise<Setup['os']> {
 }
 
 async function checkGh($: $): Promise<boolean> {
+  const before = await read($, setup)
   const version = await tryRun($, ['gh', '--version'])
   let state: Setup['gh'] = 'ready'
   if (!version || version.exitCode !== 0) state = 'missing'
-  else if ((await tryRun($, ['gh', 'auth', 'status']))?.exitCode !== 0) state = 'signed-out'
+  else {
+    const auth = await tryRun($, ['gh', 'auth', 'status'])
+    // `gh auth status` also fails with no network, e.g. just after the laptop
+    // wakes. Only "not logged in" means signed out; anything else, once we've
+    // been working, is the network, and each row shows its own error meanwhile.
+    const isSignedOut = /not logged in/i.test(`${auth?.stdout ?? ''}${auth?.stderr ?? ''}`)
+    if (auth?.exitCode !== 0 && (isSignedOut || before.gh !== 'ready')) state = 'signed-out'
+  }
 
-  const before = await read($, setup)
   const os = before.os === 'unknown' && state === 'missing' ? await detectOs($) : before.os
   if (before.gh !== state || before.os !== os) await update($, setup, () => ({ gh: state, os }))
   if (state === 'ready' && before.gh !== 'ready' && before.gh !== 'unknown') {
@@ -481,23 +488,28 @@ async function refreshLists($: $): Promise<void> {
   await Promise.all([refreshOpenPrs($), learnViewer($)])
 }
 
-let isPolling = false
+let pollStartedAt = 0 // 0 when no poll is running
 let polls = 0
+// A poll this old is stuck (a gh call that never came back across a sleep);
+// let the next one start rather than never polling again.
+const STUCK_POLL_MS = 2 * 60_000
 let isEverythingDue = false // asked for while a poll was running
 
 // Finished releases are rechecked every few polls, or now with `everything`, to catch re-runs.
 async function poll($: $, everything = false): Promise<void> {
   if (everything) isEverythingDue = true
-  if (isPolling) return
-  isPolling = true
+  const now = Date.now()
+  if (pollStartedAt && now - pollStartedAt < STUCK_POLL_MS) return
+  const startedAt = now
+  pollStartedAt = startedAt
   const isSlowTick = polls++ % OPEN_PRS_EVERY === 0
   const isEverything = isEverythingDue || isSlowTick
   isEverythingDue = false
   try {
     if (!(await checkGh($))) return
-    const now = Date.now()
-    if ((await read($, prs)).some(pr => isStale(pr, now, AUTO_CLEAR_MS))) {
-      await update($, prs, list => list.filter(pr => !isStale(pr, now, AUTO_CLEAR_MS)))
+    const checkedAt = Date.now()
+    if ((await read($, prs)).some(pr => isStale(pr, checkedAt, AUTO_CLEAR_MS))) {
+      await update($, prs, list => list.filter(pr => !isStale(pr, checkedAt, AUTO_CLEAR_MS)))
     }
     for (const pr of await read($, prs)) {
       if (pr.state !== 'OPEN') continue
@@ -517,7 +529,8 @@ async function poll($: $, everything = false): Promise<void> {
     await prefetchLog($)
     await refreshStatus($)
   } finally {
-    isPolling = false
+    // A stuck poll that finishes late mustn't clear a newer one's mark.
+    if (pollStartedAt === startedAt) pollStartedAt = 0
   }
 }
 
