@@ -1,6 +1,6 @@
 {
   "name": "gh-pulse",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "PR checks and GitHub Actions runs, live in Claude Code. Failing logs one key from Claude, and Space Invaders for your pipelines.",
   "author": {
     "name": "SID Technologies"
