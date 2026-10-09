@@ -1,10 +1,10 @@
-# gh-pulse
+# CI Invaders
 
 PR checks and GitHub Actions runs, live inside Claude Code. When CI fails, one key puts the failing log in front of Claude. Release pipelines play out as Space Invaders.
 
 <!--
   DEMO CLIP: put your video or GIF here. GitHub plays an .mp4 dragged into
-  this file in the web editor; a GIF works as ![gh-pulse demo](docs/demo.gif).
+  this file in the web editor; a GIF works as ![CI Invaders demo](docs/demo.gif).
 -->
 
 ## Install
@@ -12,13 +12,13 @@ PR checks and GitHub Actions runs, live inside Claude Code. When CI fails, one k
 Needs Claude Code 2.1.287 or later and the [GitHub CLI](https://cli.github.com), signed in (`gh auth login`).
 
 ```sh
-claude plugin marketplace add SID-Technologies/gh-pulse
-claude plugin install gh-pulse@gh-pulse
+claude plugin marketplace add SID-Technologies/ci-invaders
+claude plugin install ci-invaders@ci-invaders
 ```
 
-Or inside a session: `/plugin marketplace add SID-Technologies/gh-pulse`, then pick it from `/plugin`. Run `/pulse` to open the board.
+Or inside a session: `/plugin marketplace add SID-Technologies/ci-invaders`, then pick it from `/plugin`. Run `/pulse` to open the board.
 
-If `gh` is missing or signed out, gh-pulse tells you what to run and starts working within 15 seconds of you fixing it.
+If `gh` is missing or signed out, CI Invaders tells you what to run and starts working within 15 seconds of you fixing it.
 
 ## What it does
 
@@ -54,7 +54,7 @@ Three lists sit at the top at a fixed height and scroll, so the open item below 
 
 The pinned item stays in the detail while you move around the lists. Merged and closed PRs drop off by themselves 10 minutes after they end.
 
-Buttons only appear when they apply. gh-pulse polls every 15 seconds; your open PRs every minute; CI history every 5 minutes. Finished releases are rechecked every minute so a re-run shows up.
+Buttons only appear when they apply. CI Invaders polls every 15 seconds; your open PRs every minute; CI history every 5 minutes. Finished releases are rechecked every minute so a re-run shows up.
 
 ## Commands
 
@@ -77,7 +77,7 @@ Paste any GitHub link into any of the three commands and it goes to the right li
 
 ## Settings
 
-Set in `/config`, or under `pluginConfigs.gh-pulse.options` in settings.json.
+Set in `/config`, or under `pluginConfigs.ci-invaders.options` in settings.json.
 
 | Setting | Default | |
 | --- | --- | --- |
@@ -109,7 +109,7 @@ tests/               claude plugin test suites
 
 ## Releasing
 
-Run the Release workflow by hand: **Actions > Release > Run workflow**, or `gh workflow run release.yml`. It works out the next version from the PR titles merged since the last tag (`feat: …` bumps minor, `fix: …` and anything else bump patch, `feat!: …` or `BREAKING CHANGE` bumps major), commits it to `.claude-plugin/plugin.json`, tags `gh-pulse--v<version>` and publishes a GitHub release. Choose a bump when you run it to override that: `gh workflow run release.yml -f bump=minor`.
+Run the Release workflow by hand: **Actions > Release > Run workflow**, or `gh workflow run release.yml`. It works out the next version from the PR titles merged since the last tag (`feat: …` bumps minor, `fix: …` and anything else bump patch, `feat!: …` or `BREAKING CHANGE` bumps major), commits it to `.claude-plugin/plugin.json`, tags `ci-invaders--v<version>` and publishes a GitHub release (releases up to v0.2.1 were tagged `gh-pulse--v*`). Choose a bump when you run it to override that: `gh workflow run release.yml -f bump=minor`.
 
 ## License
 

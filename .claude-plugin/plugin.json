@@ -1,12 +1,12 @@
 {
-  "name": "gh-pulse",
+  "name": "ci-invaders",
   "version": "0.2.1",
   "description": "PR checks and GitHub Actions runs, live in Claude Code. Failing logs one key from Claude, and Space Invaders for your pipelines.",
   "author": {
     "name": "SID Technologies"
   },
-  "repository": "https://github.com/SID-Technologies/gh-pulse",
-  "homepage": "https://github.com/SID-Technologies/gh-pulse",
+  "repository": "https://github.com/SID-Technologies/ci-invaders",
+  "homepage": "https://github.com/SID-Technologies/ci-invaders",
   "license": "MIT",
   "keywords": [
     "github",

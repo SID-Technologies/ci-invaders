@@ -28,11 +28,11 @@ const prJson = (url = PR_URL, conclusion = 'FAILURE') =>
 const ok = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
 
 const pane = {
-  plugin: 'gh-pulse',
+  plugin: 'ci-invaders',
   surface: 'terminal',
   component: 'Pane',
-  requestId: 'gh-pulse',
-  props: { title: 'gh-pulse', isFocused: true, bodyColumns: 90, placement: 'dock' } as unknown as RenderPropsOf['Pane'],
+  requestId: 'ci-invaders',
+  props: { title: 'CI Invaders', isFocused: true, bodyColumns: 90, placement: 'dock' } as unknown as RenderPropsOf['Pane'],
 } as const
 
 /** A gh that knows a failing PR, its log and who you are, and records every call. */
@@ -188,7 +188,7 @@ test('arrows and jumps move the cursor; enter pins a row in the detail', async (
   expect(await ui.find({ type: 'Link', text: '#482' })).toBeDefined()
 
   // Moving the cursor to #9 (as an arrow key does) leaves #482 pinned.
-  await $.ui.focus({ component: 'Pane', requestId: 'gh-pulse', plugin: 'gh-pulse', element: `item:pr:${OTHER_URL}`, origin: { kind: 'person' } } as never)
+  await $.ui.focus({ component: 'Pane', requestId: 'ci-invaders', plugin: 'ci-invaders', element: `item:pr:${OTHER_URL}`, origin: { kind: 'person' } } as never)
   expect(await ui.find({ type: 'Link', text: '#482' })).toBeDefined()
   expect(await ui.find({ type: 'Link', text: '#9' })).toBeUndefined()
 

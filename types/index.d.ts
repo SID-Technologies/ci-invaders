@@ -86,7 +86,7 @@ export type Logs = Record<string, { lines: string[]; at: number }>
 
 declare module 'claude-code' {
   interface PluginState {
-    'gh-pulse': {
+    'ci-invaders': {
       prs: Pr[]
       releases: Release[]
       frame: number

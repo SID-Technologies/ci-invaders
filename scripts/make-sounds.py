@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Synthesise gh-pulse's sound clips: short, soft tones, so the plugin ships no
+"""Synthesise CI Invaders' sound clips: short, soft tones, so the plugin ships no
 third-party audio. Run from the repo root: python3 scripts/make-sounds.py"""
 
 import math

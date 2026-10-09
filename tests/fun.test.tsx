@@ -25,11 +25,11 @@ const prJson = (state = 'OPEN', conclusion = 'FAILURE') =>
 const ok = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
 
 const pane = {
-  plugin: 'gh-pulse',
+  plugin: 'ci-invaders',
   surface: 'terminal',
   component: 'Pane',
-  requestId: 'gh-pulse',
-  props: { title: 'gh-pulse', isFocused: true, bodyColumns: 90, placement: 'dock' } as unknown as RenderPropsOf['Pane'],
+  requestId: 'ci-invaders',
+  props: { title: 'CI Invaders', isFocused: true, bodyColumns: 90, placement: 'dock' } as unknown as RenderPropsOf['Pane'],
 } as const
 
 const FLAKY_RUNS = JSON.stringify(
