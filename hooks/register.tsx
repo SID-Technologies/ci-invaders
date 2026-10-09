@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, RenderChildren, Timer } from 'claude-code'
+import type { EngineInterface, Register, RenderChildren, RenderInput, Timer } from 'claude-code'
 
 import type { Celebration, History, Logs, OpenPrs, Pr, Release, Run, Setup, Undo } from '../types'
 import {
@@ -90,6 +90,7 @@ const OPEN_PRS_EVERY = 4 // polls between refreshes of your PRs and review reque
 const RESEAT_MS = 80 // long enough for the board to redraw
 const UNDO_MS = 10_000
 const HISTORY_TTL_MS = 5 * 60_000
+const REDRAW_MS = 3_000
 const AUTO_CLEAR_MS = 10 * 60_000 // merged or closed PRs drop off after this
 
 const MAX_PRS = 5
@@ -900,6 +901,718 @@ async function trackFromCommand($: $, arg: string, asked: 'pr' | 'actions'): Pro
   }
 }
 
+// ── Board ──
+
+async function drawBoard($: $, e: RenderInput<'Pane'>) {
+  const elements = $.ui.resolve(e)
+  const { Box, Button, Link, Text } = elements
+  // Raster and Image are terminal-only.
+  const Raster = 'Raster' in elements ? elements.Raster : undefined
+  const Image = 'Image' in elements ? elements.Image : undefined
+  const party = await read($, celebration)
+  const pastRuns = await read($, history)
+  const faces = await read($, avatars)
+  const prList = await read($, prs)
+  const releaseList = await read($, releases)
+  const mine = await read($, openPrs)
+  const me = await read($, viewer)
+  const allLogs = await read($, logs)
+  const chosenLog = await read($, logCheck)
+  const f = await read($, frame)
+  const shown = await read($, layout)
+  const kept = await read($, undo)
+  const cursorKey = await read($, cursor)
+  const doing = await read($, busy)
+  const isShowingKeys = await read($, isKeysShown)
+  const props = e.props as { bodyColumns?: number; isFocused?: boolean; scroll?: { bodyRows?: number } }
+  const columns = Number(props.bodyColumns ?? 80)
+  const inner = Math.max(20, columns - 2)
+  const barWidth = Math.max(10, Math.min(64, inner))
+
+  const advice = setupAdvice(await read($, setup))
+  if (advice) {
+    return (
+      <Box flexDirection="column" paddingX={1} gap={1}>
+        <Text bold color="yellow">
+          {advice.title}
+        </Text>
+        <Box flexDirection="column">
+          {advice.steps.map((step, i) => (
+            <Box key={`step-${i}`} gap={2}>
+              <Text dimColor>{i + 1}</Text>
+              <Text>{step}</Text>
+            </Box>
+          ))}
+        </Box>
+        <Box gap={2}>
+          <Link href="https://cli.github.com" label="cli.github.com" />
+          <Button key="recheck" plain dimColor hotkey="r" label="Check again" onPress={() => checkGh($)} />
+        </Box>
+      </Box>
+    )
+  }
+
+  const Bar = ({ t, width }: { t: Tally; width: number }) => {
+    return (
+      <Box flexShrink={0}>
+        {segments(t, width).map((seg, i) => (
+          <Text key={`seg-${i}`} color={tone(seg.state)} dimColor={seg.state === 'skip'}>
+            {cells(seg, f)}
+          </Text>
+        ))}
+      </Box>
+    )
+  }
+
+  const Verdict = ({ state, t }: { state: Shown; t: Tally }) => (
+    <Box gap={1}>
+      <Text color={tone(state)}>{glyph(state, f)}</Text>
+      <Box width={10}>
+        <Text bold color={tone(state)}>
+          {verdict(state)}
+        </Text>
+      </Box>
+      <Text dimColor>{summary(t)}</Text>
+    </Box>
+  )
+
+  // A detail row: status, group (a check's workflow, a job's run), name, time.
+  // Fixed widths, shared by every row in the detail, so the columns line up.
+  const groupWidthOf = (groups: readonly string[]) => Math.min(24, Math.max(0, ...groups.map(group => group.length)))
+  const Row = ({ key, state, group, groupWidth, name, url, ms, isWaiting = false, isDim = false }: {
+    key: string
+    state: Shown
+    group: string
+    groupWidth: number
+    name: string
+    url?: string
+    ms?: number
+    isWaiting?: boolean
+    isDim?: boolean
+  }) => {
+    const columns = [1, groupWidth, TIME_COLUMN].filter(w => w > 0)
+    const nameWidth = Math.max(8, inner - columns.reduce((sum, w) => sum + w, 0) - 2 * columns.length)
+    return (
+      <Box key={key} gap={2}>
+        <Box width={1} flexShrink={0}>
+          <Text color={tone(state)}>{glyph(state, f)}</Text>
+        </Box>
+        {groupWidth > 0 && (
+          <Box width={groupWidth} flexShrink={0}>
+            <Text dimColor wrap="truncate">
+              {clip(group, groupWidth)}
+            </Text>
+          </Box>
+        )}
+        <Box width={nameWidth} flexShrink={0} overflow="hidden">
+          {url ? (
+            <Link href={url} label={clip(name, nameWidth)} />
+          ) : (
+            <Text dimColor={isDim} wrap="truncate">
+              {clip(name, nameWidth)}
+            </Text>
+          )}
+        </Box>
+        <Box width={TIME_COLUMN} flexShrink={0} justifyContent="flex-end">
+          <Text dimColor>{isWaiting ? 'waiting' : state === 'pending' ? 'running' : duration(ms)}</Text>
+        </Box>
+      </Box>
+    )
+  }
+
+  const items = [
+    ...[...prList].reverse().map(pr => ({
+      key: prKey(pr),
+      label: `#${pr.number}`,
+      title: pr.title,
+      state: prState(pr) as Shown,
+      t: tally(pr.checks),
+      pr,
+    })),
+    ...[...releaseList].reverse().map(r => ({
+      key: releaseKey(r),
+      label: r.label,
+      title: r.runs[0]?.title ?? '',
+      state: releaseState(r) as Shown,
+      t: tally(releaseItems(r)),
+      release: r,
+    })),
+  ]
+  const chosen = await read($, selected)
+  const openKey = items.some(item => item.key === chosen) ? chosen : (items[0]?.key ?? '')
+  const labelWidth = Math.min(14, Math.max(4, ...items.map(item => item.label.length), ...mine.prs.map(pr => `#${pr.number}`.length)))
+
+  const drawPr = (pr: Pr) => {
+    const t = tally(pr.checks)
+    const state = prState(pr)
+    const workflows = [...new Set(pr.checks.map(c => c.workflow).filter((w): w is string => Boolean(w)))]
+    const groupWidth = groupWidthOf(workflows)
+    // Failures and their log first, then everything else.
+    const failing = pr.checks.filter(c => c.state === 'fail')
+    const others = byUrgency(pr.checks.filter(c => c.state !== 'fail'))
+    const checkRow = (c: (typeof pr.checks)[number]) =>
+      Row({
+        key: `${pr.url}#${c.workflow ?? ''}/${c.name}`,
+        state: c.state,
+        group: c.workflow ?? '',
+        groupWidth,
+        name: c.name,
+        url: c.url,
+        ms: c.durationMs,
+      })
+    const review = reviewLabel(pr.review)
+    const merge = mergeLabel(pr)
+    return (
+      <Box key={`detail-${pr.url}`} flexDirection="column" gap={1}>
+        {Raster && isCelebrating(party, f) && party.kind === 'merged' && party.key === prKey(pr) && (
+          <Raster
+            key="confetti"
+            {...toCells(confettiFrame(pr.number, f - party.startFrame, inner, 12))}
+          />
+        )}
+        <Box flexDirection="column">
+          <Box gap={2}>
+            <Link href={pr.url} label={`#${pr.number}`} />
+            <Box flexShrink={1} minWidth={0} overflow="hidden">
+              <Text bold wrap="truncate-end">
+                {pr.title}
+              </Text>
+            </Box>
+          </Box>
+          <Text dimColor wrap="truncate-end">
+            {pr.repo.split('/')[1] ?? pr.repo} · {pr.branch}
+          </Text>
+        </Box>
+
+        <Box flexDirection="column">
+          {Verdict({ state, t })}
+          {Bar({ t, width: barWidth })}
+        </Box>
+
+        {failing.length > 0 && (
+          <Box flexDirection="column">
+            {failing.map(checkRow)}
+          </Box>
+        )}
+
+        {(() => {
+          const check = shownFailure(pr, chosenLog)
+          const jobId = parseActionsUrl(check?.url)?.jobId
+          if (!check || !jobId) return null
+          const lines = allLogs[jobId]?.lines
+          return (
+            <Box flexDirection="column">
+              <Text bold dimColor wrap="truncate-end">
+                LOG · {check.workflow ? `${check.workflow} / ` : ''}{check.name}
+              </Text>
+              {lines ? (
+                lines.slice(-LOG_PREVIEW).map((line, i) => (
+                  <Text key={`log-${i}`} dimColor wrap="truncate-end">
+                    {line}
+                  </Text>
+                ))
+              ) : (
+                <Text dimColor>{glyph('pending', f)} loading the failed step's log…</Text>
+              )}
+            </Box>
+          )
+        })()}
+
+        {others.length > 0 && (
+          <Box flexDirection="column">
+            {others.slice(0, Math.max(0, MAX_CHECKS - failing.length)).map(checkRow)}
+            {failing.length + others.length > MAX_CHECKS && (
+              <Box paddingLeft={3}>
+                <Text dimColor>{failing.length + others.length - Math.max(MAX_CHECKS, failing.length)} more</Text>
+              </Box>
+            )}
+          </Box>
+        )}
+
+        {settings.heatmap && pr.base && (() => {
+          const rows = workflows
+            .slice(0, 6)
+            .map(w => ({ workflow: w, past: pastRuns[historyKey(pr, w)] }))
+            .filter(row => row.past && row.past.results.length > 0)
+          if (rows.length === 0) return null
+          return (
+            <Box flexDirection="column">
+              <Text bold dimColor>
+                HISTORY ON {pr.base.toUpperCase()}
+              </Text>
+              {rows.map(row => (
+                <Box key={`history-${row.workflow}`} gap={2}>
+                  <Box width={1} flexShrink={0} />
+                  <Box width={Math.max(groupWidth, 1)} flexShrink={0}>
+                    <Text dimColor wrap="truncate">
+                      {clip(row.workflow, Math.max(groupWidth, 1))}
+                    </Text>
+                  </Box>
+                  <Box>
+                    {[...row.past!.results].reverse().map((result, i) => (
+                      <Text key={`h-${i}`} color={tone(result)} dimColor={result === 'skip'}>
+                        ⣿
+                      </Text>
+                    ))}
+                  </Box>
+                  {isFlaky(row.past!.results) && <Text color="yellow">flaky</Text>}
+                </Box>
+              ))}
+            </Box>
+          )
+        })()}
+
+        {(pr.reviews?.length ?? 0) > 0 && (
+          <Box gap={3} flexWrap="wrap">
+            {(pr.reviews ?? []).map(reviewer => {
+              const mark = reviewerGlyph(reviewer.state)
+              const face = faces[reviewer.login]
+              return (
+                <Box key={`reviewer-${reviewer.login}`} gap={1}>
+                  {settings.avatars && Image && face ? (
+                    <Image key={`avatar-${reviewer.login}`} source={{ png: face }} columns={2} rows={1} alt={reviewer.login.slice(0, 2)} />
+                  ) : null}
+                  <Text color={mark.color}>{mark.glyph}</Text>
+                  <Text dimColor={reviewer.state === 'REQUESTED'}>{reviewer.login}</Text>
+                </Box>
+              )
+            })}
+          </Box>
+        )}
+
+        <Box gap={4}>
+          <Box gap={2}>
+            <Text dimColor>Review</Text>
+            <Text color={review.state === 'skip' ? undefined : tone(review.state)}>{review.text}</Text>
+          </Box>
+          <Box gap={2}>
+            <Text dimColor>Merge</Text>
+            <Text color={merge.state === 'skip' ? undefined : tone(merge.state)}>{merge.text}</Text>
+          </Box>
+        </Box>
+        {pr.error && <Text color="yellow">{pr.error}</Text>}
+      </Box>
+    )
+  }
+
+  const drawRelease = (r: Release) => {
+    const t = tally(releaseItems(r))
+    const runWidth = groupWidthOf(r.runs.map(run => run.name))
+    const state = releaseState(r)
+    return (
+      <Box key={`detail-${r.key}`} flexDirection="column" gap={1}>
+        <Box gap={2}>
+          {r.url ? <Link href={r.url} label={r.label} /> : <Text bold>{r.label}</Text>}
+          <Text dimColor>release</Text>
+        </Box>
+
+        {Raster && settings.invaders && (
+          <Raster
+            key="invaders"
+            {...toCells(
+              invadersFrame({
+                invaders: releaseInvaders(r).map(job => ({
+                  state: job.state,
+                  slot: fleets.get(r.key)?.get(job.key)?.slot,
+                  seenAt: fleets.get(r.key)?.get(job.key)?.seenAt,
+                  doneAt: doneAt.get(`${r.key}|${job.key}`),
+                })),
+                frame: f,
+                width: inner,
+                ship: shipFor(r.key),
+              }),
+            )}
+          />
+        )}
+
+        <Box flexDirection="column">
+          {Verdict({ state, t })}
+          {Bar({ t, width: barWidth })}
+        </Box>
+
+        {r.runs.length === 0 && !r.error && (
+          <Box gap={2}>
+            <Text color="yellow">{glyph('pending', f)}</Text>
+            <Text dimColor>waiting for pipelines to start</Text>
+          </Box>
+        )}
+        {r.runs.length > 0 && (
+          <Box flexDirection="column">
+            {r.runs.map(run => (
+              <Box key={`run-${run.id}`} flexDirection="column">
+                {Row({
+                  key: `run-row-${run.id}`,
+                  state: run.state,
+                  group: run.name,
+                  groupWidth: runWidth,
+                  name: run.title || `run ${run.id}`,
+                  url: run.url || undefined,
+                  ms: run.durationMs,
+                })}
+                {byUrgency(run.jobs.filter(job => job.state !== 'pass'))
+                  .slice(0, MAX_JOBS)
+                  .map(job =>
+                    Row({
+                      key: `job-${run.id}-${job.name}`,
+                      state: job.state,
+                      group: '',
+                      groupWidth: runWidth,
+                      name: job.name,
+                      url: job.url,
+                      ms: job.durationMs,
+                      isWaiting: job.isWaiting,
+                    }),
+                  )}
+              </Box>
+            ))}
+          </Box>
+        )}
+        {r.error && <Text color="yellow">{r.error}</Text>}
+      </Box>
+    )
+  }
+
+  const isTall = (props.scroll?.bodyRows ?? 40) >= 32
+  boardShape = { prRows: isTall ? 4 : 3, sideRows: isTall ? 3 : 2, isSideBySide: inner >= 100 }
+  const shortRepo = (repo: string) => repo.split('/')[1] ?? repo
+  // Every list shares one set of column widths so the columns line up across them.
+  const allRepos = [
+    ...prList.map(pr => pr.repo),
+    ...releaseList.map(r => r.repo ?? ''),
+    ...(mine.prs.length > 0 ? [mine.repo] : []),
+  ].map(shortRepo)
+  const repoWidth = Math.min(14, Math.max(0, ...allRepos.map(repo => repo.length)))
+  const counts = [...items.map(item => item.t), ...mine.prs.map(pr => tally(pr.checks))].map(t => `${t.pass}/${t.total}`.length)
+  const countWidth = Math.max(3, ...counts)
+
+  const BAR_CELLS = 6
+  // Every column has a fixed width, the title included (whatever the row has
+  // left), so nothing a terminal draws wider than expected can shift the rest.
+  const ListRow = ({ key, width, marker, state, repo, label, title, t, isOpen, buttonKey, onPress }: {
+    key: string
+    width: number
+    marker: string
+    state: Shown
+    repo: string
+    label: string
+    title: string
+    t: Tally
+    isOpen: boolean
+    buttonKey: string
+    onPress: () => unknown
+  }) => {
+    const columns = [1, 1, repoWidth, labelWidth, BAR_CELLS, countWidth].filter(w => w > 0)
+    const titleWidth = Math.max(4, width - columns.reduce((sum, w) => sum + w, 0) - columns.length)
+    return (
+      <Box key={key} gap={1} {...(isOpen || cursorKey === buttonKey ? { backgroundColor: 'userMessageBackground' } : {})}>
+        <Box width={1} flexShrink={0}>
+          <Text color="cyan" dimColor={!isOpen}>
+            {marker}
+          </Text>
+        </Box>
+        <Box width={1} flexShrink={0}>
+          <Text color={tone(state)}>{glyph(state, f)}</Text>
+        </Box>
+        {repoWidth > 0 && (
+          <Box width={repoWidth} flexShrink={0}>
+            <Text dimColor wrap="truncate">
+              {clip(repo, repoWidth)}
+            </Text>
+          </Box>
+        )}
+        <Box width={labelWidth} flexShrink={0}>
+          <Button key={buttonKey} plain dimColor={!isOpen} label={clip(label, labelWidth)} onPress={onPress} />
+        </Box>
+        <Box width={titleWidth} flexShrink={0} overflow="hidden">
+          <Text bold={isOpen} dimColor={!isOpen} wrap="truncate">
+            {clip(title, titleWidth)}
+          </Text>
+        </Box>
+        <Box width={BAR_CELLS} flexShrink={0}>
+          {Bar({ t, width: BAR_CELLS })}
+        </Box>
+        <Box width={countWidth} flexShrink={0} justifyContent="flex-end">
+          <Text dimColor>
+            {t.pass}/{t.total}
+          </Text>
+        </Box>
+      </Box>
+    )
+  }
+
+  const tracked = new Set(prList.map(pr => pr.url))
+  const trackAndOpen = async (url: string) => {
+    await trackPr($, url)
+    await update($, selected, () => `pr:${url}`)
+  }
+  const untracked = mine.prs.filter(pr => !tracked.has(pr.url))
+  const prItems = items.filter(item => 'pr' in item)
+  const actionItems = items.filter(item => 'release' in item)
+  const isListShown = shown !== 'detail'
+  const sections = {
+    prs: isListShown ? prItems.map(item => `${ITEM}${item.key}`) : [],
+    actions: isListShown ? actionItems.map(item => `${ITEM}${item.key}`) : [],
+    mine: isListShown ? untracked.map(pr => `${ADD}${pr.url}`) : [],
+  }
+  rowKeys = [...sections.prs, ...sections.actions, ...sections.mine]
+  sectionRows = sections
+  drawnRows = new Set()
+  type Section = keyof typeof sections
+  const ids = Object.keys(sections) as Section[]
+  const active: Section =
+    ids.find(id => sections[id].includes(cursorKey)) ?? ids.find(id => sections[id].includes(`${ITEM}${openKey}`)) ?? 'prs'
+  const focusIn = (id: Section) =>
+    sections[id].includes(cursorKey) ? cursorKey : sections[id].includes(`${ITEM}${openKey}`) ? `${ITEM}${openKey}` : ''
+  const where = (id: Section) => {
+    const keys = sections[id]
+    const at = keys.indexOf(focusIn(id))
+    return keys.length === 0 ? '' : at === -1 ? ` · ${keys.length}` : ` · ${at + 1} of ${keys.length}`
+  }
+  const Heading = ({ id, label }: { id: Section; label: string }) => (
+    <Button
+      key={`${SECTION}${id}`}
+      plain
+      dimColor={id !== active}
+      hotkey={String(Object.keys(sections).indexOf(id) + 1)}
+      label={label}
+      onPress={() => jumpToSection($, id)}
+    />
+  )
+
+  // A list panel of fixed height: a border (lit when active), the heading with
+  // where you are and what's scrolled out of view, and `size` rows.
+  type Line = { key: string; draw: (width: number) => RenderChildren }
+  const ListBlock = ({ id, label, lines, size, empty, width }: { id: Section; label: string; lines: Line[]; size: number; empty: string; width?: number }) => {
+    const at = lines.findIndex(line => line.key !== '' && line.key === focusIn(id))
+    const first = scrollWindow(windowStarts.get(id) ?? 0, at, lines.length, size)
+    windowStarts.set(id, first)
+    const visible = lines.slice(first, first + size)
+    for (const line of visible) if (line.key) drawnRows.add(line.key)
+    const above = lines.slice(0, first).filter(line => line.key).length
+    const below = lines.slice(first + size).filter(line => line.key).length
+    const more = [above > 0 && `↑${above}`, below > 0 && `↓${below}`].filter(Boolean).join(' ')
+    return (
+      <Box
+        key={`list-${id}`}
+        flexDirection="column"
+        height={size + 3}
+        minWidth={0}
+        borderStyle="round"
+        paddingX={1}
+        {...(id === active ? { borderColor: 'cyan' } : { borderDimColor: true })}
+        {...(width ? { width, flexShrink: 0 } : { flexGrow: 1 })}
+      >
+        {Heading({ id, label: more ? `${label}${where(id)}  ${more}` : `${label}${where(id)}` })}
+        <Box flexDirection="column" height={size}>
+          {visible.length > 0 ? visible.map(line => line.draw((width ?? inner) - 4)) : <Text dimColor wrap="truncate-end">{empty}</Text>}
+        </Box>
+      </Box>
+    )
+  }
+
+  const trackedLine = (item: (typeof items)[number]): Line => ({
+    key: `${ITEM}${item.key}`,
+    draw: width =>
+      ListRow({
+        key: `row-${item.key}`,
+        width,
+        state: item.state,
+        repo: shortRepo('pr' in item ? item.pr.repo : (item.release.repo ?? '')),
+        label: item.label,
+        title: item.title,
+        t: item.t,
+        isOpen: item.key === openKey,
+        marker: item.key === openKey ? '>' : ' ',
+        buttonKey: `${ITEM}${item.key}`,
+        onPress: () => openItem($, item.key),
+      }),
+  })
+
+  const mineRepo = mine.repo ? shortRepo(mine.repo) : ''
+  const mineLines: Line[] = untracked.map(pr => ({
+    key: `${ADD}${pr.url}`,
+    draw: width =>
+      ListRow({
+        key: `mine-${pr.url}`,
+        width,
+        state: pr.checks.length === 0 ? 'skip' : overall(pr.checks),
+        repo: mineRepo,
+        label: `#${pr.number}`,
+        title: pr.isDraft ? `${pr.title} (draft)` : pr.title,
+        t: tally(pr.checks),
+        isOpen: false,
+        marker: '+',
+        buttonKey: `${ADD}${pr.url}`,
+        onPress: () => trackAndOpen(pr.url),
+      }),
+  }))
+
+  const open = items.find(item => item.key === openKey)
+  const detail = open ? ('pr' in open ? drawPr(open.pr) : drawRelease(open.release)) : null
+  const openPr = open && 'pr' in open ? open.pr : undefined
+  const failingChecks = openPr?.checks.filter(c => c.state === 'fail') ?? []
+  const hasFailedRuns = open && 'release' in open && open.release.runs.some(run => run.state === 'fail')
+  // x removes the highlighted tracked row, or the pinned one when the cursor is elsewhere.
+  const isTrackedRow = sections.prs.includes(cursorKey) || sections.actions.includes(cursorKey)
+  const removable = isTrackedRow ? cursorKey.slice(ITEM.length) : openKey
+  const finishedCount = [...prList, ...releaseList].filter(isFinished).length
+
+  // Side by side, each list gets a fixed half, or the busier one crowds the other out.
+  const leftWidth = boardShape.isSideBySide ? Math.floor((inner - 1) / 2) : undefined
+  const rightWidth = leftWidth === undefined ? undefined : inner - 1 - leftWidth
+  const prBlock = ListBlock({
+    id: 'prs',
+    label: 'PULL REQUESTS',
+    lines: prItems.map(trackedLine),
+    size: boardShape.prRows,
+    empty: 'None tracked. Press enter on one of your PRs, or /pulse-pr.',
+  })
+  const actionBlock = ListBlock({
+    id: 'actions',
+    label: 'ACTIONS',
+    lines: actionItems.map(trackedLine),
+    size: boardShape.sideRows,
+    width: leftWidth,
+    empty: 'None tracked. /pulse-release, or a release Claude creates.',
+  })
+  const mineBlock = ListBlock({
+    id: 'mine',
+    label: 'YOUR OPEN PRS',
+    lines: mineLines,
+    size: boardShape.sideRows,
+    width: rightWidth,
+    empty: mine.error ?? (mine.prs.length > 0 ? 'All tracked.' : 'None open.'),
+  })
+
+  // Laid into rows by hand: a wrapping Box puts its gap between rows too.
+  // The rows always take the height the full set would, so switching items
+  // never moves the lists below.
+  const undoLabel = kept ? `Undo (${clip(kept.label, UNDO_LABEL_MAX)})` : ''
+  const actions = (
+    [
+      ['Refresh', <Button key="refresh" plain dimColor hotkey="r" label="Refresh" onPress={() => showWhile($, 'Refreshing', () => Promise.all([poll($, true), refreshLists($)]))} />],
+      [
+        LAYOUT_LABEL[NEXT_LAYOUT[shown]],
+        <Button key="layout" plain dimColor hotkey="m" label={LAYOUT_LABEL[NEXT_LAYOUT[shown]]} onPress={() => cycleLayout($)} />,
+      ],
+      failingChecks.length > 0 && [
+        'Fix it',
+        <Button key="fix" plain hotkey="f" label="Fix it" onPress={() => showWhile($, 'Reading the failing logs', () => fixIt($, openKey, e.surface))} />,
+      ],
+      (failingChecks.length > 0 || hasFailedRuns) && [
+        'Rerun failed',
+        <Button key="rerun" plain dimColor hotkey="e" label="Rerun failed" onPress={() => showWhile($, 'Rerunning the failed jobs', () => rerunFailed($, openKey))} />,
+      ],
+      failingChecks.length > 1 && [
+        'Next log',
+        <Button key="log" plain dimColor hotkey="l" label="Next log" onPress={() => showWhile($, 'Loading the log', () => nextLog($, openKey))} />,
+      ],
+      failingChecks.length > 0 && ['Copy log', <Button key="copy" plain dimColor hotkey="y" label="Copy log" onPress={() => copyLog($, openKey, e.surface)} />],
+      openPr && openPr.state === 'OPEN' && me && openPr.author && openPr.author !== me && [
+        'Review with Claude',
+        <Button key="ask" plain hotkey="a" label="Review with Claude" onPress={() => askForReview($, openPr.url)} />,
+      ],
+      openKey && ['Open', <Button key="open" plain dimColor hotkey="o" label="Open" onPress={() => openInBrowser($, openKey)} />],
+      removable && ['Remove', <Button key="remove" plain dimColor hotkey="x" label="Remove" onPress={() => untrack($, removable)} />],
+      finishedCount > 0 && [
+        `Clear finished (${finishedCount})`,
+        <Button key="clear-finished" plain dimColor hotkey="d" label={`Clear finished (${finishedCount})`} onPress={() => clearFinished($)} />,
+      ],
+      items.length > 0 && ['Clear', <Button key="clear" plain dimColor hotkey="c" label="Clear" onPress={() => clearAll($)} />],
+      kept && [undoLabel, <Button key="undo" plain hotkey="z" label={undoLabel} onPress={() => undoRemoval($)} />],
+      [
+        isShowingKeys ? 'Hide keys' : 'Keys',
+        <Button key="keys" plain dimColor hotkey="h" label={isShowingKeys ? 'Hide keys' : 'Keys'} onPress={() => update($, isKeysShown, shown => !shown)} />,
+      ],
+    ] as const
+  )
+    .filter(action => action !== false && action !== undefined && action !== '' && action !== null)
+    .map(action => {
+      const [label, button] = action as readonly [string, RenderChildren]
+      return { width: label.length + 3, button } // "k: label"
+    })
+  const actionRows = packRows(actions.map(action => action.width), inner, ACTION_GAP)
+  const actionRowsReserved = packRows(ALL_ACTION_LABELS.map(label => label.length + 3), inner, ACTION_GAP).length
+
+  return (
+    <Box flexDirection="column" paddingX={1} gap={1}>
+      {/* Help on its own line so it never gets truncated. */}
+      <Box flexDirection="column">
+        {actionRows.map((row, i) => (
+          <Box key={`actions-${i}`} gap={ACTION_GAP}>
+            {row.map(index => actions[index]!.button)}
+          </Box>
+        ))}
+        {doing ? (
+          <Text color="yellow" wrap="truncate-end">
+            {glyph('pending', f)} {doing}…
+          </Text>
+        ) : (
+          <Text dimColor wrap="truncate-end">
+            {props.isFocused ? '↑↓ move · enter pin · 1 2 3 lists · h all keys · esc back to prompt' : 'ctrl+x tab or click to use the keyboard'}
+          </Text>
+        )}
+        {/* Room for the rows other items' buttons need, so the lists below never move. */}
+        {Array.from({ length: Math.max(0, actionRowsReserved - actionRows.length) }, (_, i) => (
+          <Text key={`actions-pad-${i}`}> </Text>
+        ))}
+      </Box>
+
+      {isShowingKeys && (
+        <Box key="keys-panel" borderStyle="round" borderDimColor paddingX={1} gap={4}>
+          {KEYS.map((group, column) => (
+            <Box key={`keys-${column}`} flexDirection="column">
+              {group.map(([keys, does]) => (
+                <Box key={`key-${keys}`} gap={1}>
+                  <Box width={9} flexShrink={0}>
+                    <Text color="cyan">{keys}</Text>
+                  </Box>
+                  <Text dimColor wrap="truncate">
+                    {does}
+                  </Text>
+                </Box>
+              ))}
+            </Box>
+          ))}
+        </Box>
+      )}
+
+      {/* Lists first at fixed heights, so the open item always starts on the same row. */}
+      {isListShown && prBlock}
+      {isListShown &&
+        (boardShape.isSideBySide ? (
+          <Box key="side-lists" gap={1}>
+            {actionBlock}
+            {mineBlock}
+          </Box>
+        ) : (
+          <Box key="side-lists" flexDirection="column">
+            {actionBlock}
+            {mineBlock}
+          </Box>
+        ))}
+
+      {shown !== 'list' && detail}
+      {shown === 'detail' && !detail && <Text dimColor>Nothing open. Press m to bring the list back.</Text>}
+    </Box>
+  )
+}
+
+// What the board shows, back to how it starts; what's tracked stays.
+async function resetBoard($: $): Promise<void> {
+  fleets.clear()
+  ships.clear()
+  doneAt.clear()
+  await update($, selected, () => '')
+  await update($, cursor, () => '')
+  await update($, layout, () => 'both' as Layout)
+  await update($, logCheck, () => '')
+  await update($, celebration, () => null)
+  await update($, isKeysShown, () => false)
+  await update($, busy, () => '')
+  $.ui.toast('Board reset')
+}
+
 // ── Hooks ───────────────────────────────────────────────────────────────
 
 const COMMANDS = [
@@ -917,13 +1630,18 @@ export const register: Register = (on, options) => {
   settings = readSettings(options)
   let pollTimer: Timer | undefined
   let frameTimer: Timer | undefined
+  let redrawTimer: Timer | undefined
 
   on('session.start', async ($, e, next) => {
     for (const command of COMMANDS) await $.command.register({ ...command })
 
     pollTimer?.cancel()
     frameTimer?.cancel()
+    redrawTimer?.cancel()
     pollTimer = $.clock.every(POLL_MS, () => void poll($))
+    // If the terminal ever fails to paint the board, it waits for the next
+    // redraw to try again; with nothing animating that could be never.
+    redrawTimer = $.clock.every(REDRAW_MS, () => $.ui.invalidate('ui.render'))
     // Only tick while something is animating.
     frameTimer = $.clock.every(FRAME_MS, () => {
       void (async () => {
@@ -1188,698 +1906,24 @@ export const register: Register = (on, options) => {
     return {}
   })
 
+  // A board that fails to draw shows why, with a way out, instead of a blank pane.
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const elements = $.ui.resolve(e)
-    const { Box, Button, Link, Text } = elements
-    // Raster and Image are terminal-only.
-    const Raster = 'Raster' in elements ? elements.Raster : undefined
-    const Image = 'Image' in elements ? elements.Image : undefined
-    const party = await read($, celebration)
-    const pastRuns = await read($, history)
-    const faces = await read($, avatars)
-    const prList = await read($, prs)
-    const releaseList = await read($, releases)
-    const mine = await read($, openPrs)
-    const me = await read($, viewer)
-    const allLogs = await read($, logs)
-    const chosenLog = await read($, logCheck)
-    const f = await read($, frame)
-    const shown = await read($, layout)
-    const kept = await read($, undo)
-    const cursorKey = await read($, cursor)
-    const doing = await read($, busy)
-    const isShowingKeys = await read($, isKeysShown)
-    const props = e.props as { bodyColumns?: number; isFocused?: boolean; scroll?: { bodyRows?: number } }
-    const columns = Number(props.bodyColumns ?? 80)
-    const inner = Math.max(20, columns - 2)
-    const barWidth = Math.max(10, Math.min(64, inner))
-
-    const advice = setupAdvice(await read($, setup))
-    if (advice) {
+    try {
+      return await drawBoard($, e)
+    } catch (error) {
+      const { Box, Button, Text } = $.ui.resolve(e)
       return (
         <Box flexDirection="column" paddingX={1} gap={1}>
-          <Text bold color="yellow">
-            {advice.title}
+          <Text bold color="red">
+            The board hit an error while drawing
           </Text>
-          <Box flexDirection="column">
-            {advice.steps.map((step, i) => (
-              <Box key={`step-${i}`} gap={2}>
-                <Text dimColor>{i + 1}</Text>
-                <Text>{step}</Text>
-              </Box>
-            ))}
-          </Box>
-          <Box gap={2}>
-            <Link href="https://cli.github.com" label="cli.github.com" />
-            <Button key="recheck" plain dimColor hotkey="r" label="Check again" onPress={() => checkGh($)} />
+          <Text wrap="wrap">{message(error)}</Text>
+          <Box gap={3}>
+            <Button key="reset-board" plain hotkey="r" label="Reset board" onPress={() => resetBoard($)} />
+            <Text dimColor>Clears the pin, cursor and layout; tracked items stay.</Text>
           </Box>
         </Box>
       )
     }
-
-    const Bar = ({ t, width }: { t: Tally; width: number }) => {
-      return (
-        <Box flexShrink={0}>
-          {segments(t, width).map((seg, i) => (
-            <Text key={`seg-${i}`} color={tone(seg.state)} dimColor={seg.state === 'skip'}>
-              {cells(seg, f)}
-            </Text>
-          ))}
-        </Box>
-      )
-    }
-
-    const Verdict = ({ state, t }: { state: Shown; t: Tally }) => (
-      <Box gap={1}>
-        <Text color={tone(state)}>{glyph(state, f)}</Text>
-        <Box width={10}>
-          <Text bold color={tone(state)}>
-            {verdict(state)}
-          </Text>
-        </Box>
-        <Text dimColor>{summary(t)}</Text>
-      </Box>
-    )
-
-    // A detail row: status, group (a check's workflow, a job's run), name, time.
-    // Fixed widths, shared by every row in the detail, so the columns line up.
-    const groupWidthOf = (groups: readonly string[]) => Math.min(24, Math.max(0, ...groups.map(group => group.length)))
-    const Row = ({ key, state, group, groupWidth, name, url, ms, isWaiting = false, isDim = false }: {
-      key: string
-      state: Shown
-      group: string
-      groupWidth: number
-      name: string
-      url?: string
-      ms?: number
-      isWaiting?: boolean
-      isDim?: boolean
-    }) => {
-      const columns = [1, groupWidth, TIME_COLUMN].filter(w => w > 0)
-      const nameWidth = Math.max(8, inner - columns.reduce((sum, w) => sum + w, 0) - 2 * columns.length)
-      return (
-        <Box key={key} gap={2}>
-          <Box width={1} flexShrink={0}>
-            <Text color={tone(state)}>{glyph(state, f)}</Text>
-          </Box>
-          {groupWidth > 0 && (
-            <Box width={groupWidth} flexShrink={0}>
-              <Text dimColor wrap="truncate">
-                {clip(group, groupWidth)}
-              </Text>
-            </Box>
-          )}
-          <Box width={nameWidth} flexShrink={0} overflow="hidden">
-            {url ? (
-              <Link href={url} label={clip(name, nameWidth)} />
-            ) : (
-              <Text dimColor={isDim} wrap="truncate">
-                {clip(name, nameWidth)}
-              </Text>
-            )}
-          </Box>
-          <Box width={TIME_COLUMN} flexShrink={0} justifyContent="flex-end">
-            <Text dimColor>{isWaiting ? 'waiting' : state === 'pending' ? 'running' : duration(ms)}</Text>
-          </Box>
-        </Box>
-      )
-    }
-
-    const items = [
-      ...[...prList].reverse().map(pr => ({
-        key: prKey(pr),
-        label: `#${pr.number}`,
-        title: pr.title,
-        state: prState(pr) as Shown,
-        t: tally(pr.checks),
-        pr,
-      })),
-      ...[...releaseList].reverse().map(r => ({
-        key: releaseKey(r),
-        label: r.label,
-        title: r.runs[0]?.title ?? '',
-        state: releaseState(r) as Shown,
-        t: tally(releaseItems(r)),
-        release: r,
-      })),
-    ]
-    const chosen = await read($, selected)
-    const openKey = items.some(item => item.key === chosen) ? chosen : (items[0]?.key ?? '')
-    const labelWidth = Math.min(14, Math.max(4, ...items.map(item => item.label.length), ...mine.prs.map(pr => `#${pr.number}`.length)))
-
-    const drawPr = (pr: Pr) => {
-      const t = tally(pr.checks)
-      const state = prState(pr)
-      const workflows = [...new Set(pr.checks.map(c => c.workflow).filter((w): w is string => Boolean(w)))]
-      const groupWidth = groupWidthOf(workflows)
-      // Failures and their log first, then everything else.
-      const failing = pr.checks.filter(c => c.state === 'fail')
-      const others = byUrgency(pr.checks.filter(c => c.state !== 'fail'))
-      const checkRow = (c: (typeof pr.checks)[number]) =>
-        Row({
-          key: `${pr.url}#${c.workflow ?? ''}/${c.name}`,
-          state: c.state,
-          group: c.workflow ?? '',
-          groupWidth,
-          name: c.name,
-          url: c.url,
-          ms: c.durationMs,
-        })
-      const review = reviewLabel(pr.review)
-      const merge = mergeLabel(pr)
-      return (
-        <Box key={`detail-${pr.url}`} flexDirection="column" gap={1}>
-          {Raster && isCelebrating(party, f) && party.kind === 'merged' && party.key === prKey(pr) && (
-            <Raster
-              key="confetti"
-              {...toCells(confettiFrame(pr.number, f - party.startFrame, inner, 12))}
-            />
-          )}
-          <Box flexDirection="column">
-            <Box gap={2}>
-              <Link href={pr.url} label={`#${pr.number}`} />
-              <Box flexShrink={1} minWidth={0} overflow="hidden">
-                <Text bold wrap="truncate-end">
-                  {pr.title}
-                </Text>
-              </Box>
-            </Box>
-            <Text dimColor wrap="truncate-end">
-              {pr.repo.split('/')[1] ?? pr.repo} · {pr.branch}
-            </Text>
-          </Box>
-
-          <Box flexDirection="column">
-            {Verdict({ state, t })}
-            {Bar({ t, width: barWidth })}
-          </Box>
-
-          {failing.length > 0 && (
-            <Box flexDirection="column">
-              {failing.map(checkRow)}
-            </Box>
-          )}
-
-          {(() => {
-            const check = shownFailure(pr, chosenLog)
-            const jobId = parseActionsUrl(check?.url)?.jobId
-            if (!check || !jobId) return null
-            const lines = allLogs[jobId]?.lines
-            return (
-              <Box flexDirection="column">
-                <Text bold dimColor wrap="truncate-end">
-                  LOG · {check.workflow ? `${check.workflow} / ` : ''}{check.name}
-                </Text>
-                {lines ? (
-                  lines.slice(-LOG_PREVIEW).map((line, i) => (
-                    <Text key={`log-${i}`} dimColor wrap="truncate-end">
-                      {line}
-                    </Text>
-                  ))
-                ) : (
-                  <Text dimColor>{glyph('pending', f)} loading the failed step's log…</Text>
-                )}
-              </Box>
-            )
-          })()}
-
-          {others.length > 0 && (
-            <Box flexDirection="column">
-              {others.slice(0, Math.max(0, MAX_CHECKS - failing.length)).map(checkRow)}
-              {failing.length + others.length > MAX_CHECKS && (
-                <Box paddingLeft={3}>
-                  <Text dimColor>{failing.length + others.length - Math.max(MAX_CHECKS, failing.length)} more</Text>
-                </Box>
-              )}
-            </Box>
-          )}
-
-          {settings.heatmap && pr.base && (() => {
-            const rows = workflows
-              .slice(0, 6)
-              .map(w => ({ workflow: w, past: pastRuns[historyKey(pr, w)] }))
-              .filter(row => row.past && row.past.results.length > 0)
-            if (rows.length === 0) return null
-            return (
-              <Box flexDirection="column">
-                <Text bold dimColor>
-                  HISTORY ON {pr.base.toUpperCase()}
-                </Text>
-                {rows.map(row => (
-                  <Box key={`history-${row.workflow}`} gap={2}>
-                    <Box width={1} flexShrink={0} />
-                    <Box width={Math.max(groupWidth, 1)} flexShrink={0}>
-                      <Text dimColor wrap="truncate">
-                        {clip(row.workflow, Math.max(groupWidth, 1))}
-                      </Text>
-                    </Box>
-                    <Box>
-                      {[...row.past!.results].reverse().map((result, i) => (
-                        <Text key={`h-${i}`} color={tone(result)} dimColor={result === 'skip'}>
-                          ⣿
-                        </Text>
-                      ))}
-                    </Box>
-                    {isFlaky(row.past!.results) && <Text color="yellow">flaky</Text>}
-                  </Box>
-                ))}
-              </Box>
-            )
-          })()}
-
-          {(pr.reviews?.length ?? 0) > 0 && (
-            <Box gap={3} flexWrap="wrap">
-              {(pr.reviews ?? []).map(reviewer => {
-                const mark = reviewerGlyph(reviewer.state)
-                const face = faces[reviewer.login]
-                return (
-                  <Box key={`reviewer-${reviewer.login}`} gap={1}>
-                    {settings.avatars && Image && face ? (
-                      <Image key={`avatar-${reviewer.login}`} source={{ png: face }} columns={2} rows={1} alt={reviewer.login.slice(0, 2)} />
-                    ) : null}
-                    <Text color={mark.color}>{mark.glyph}</Text>
-                    <Text dimColor={reviewer.state === 'REQUESTED'}>{reviewer.login}</Text>
-                  </Box>
-                )
-              })}
-            </Box>
-          )}
-
-          <Box gap={4}>
-            <Box gap={2}>
-              <Text dimColor>Review</Text>
-              <Text color={review.state === 'skip' ? undefined : tone(review.state)}>{review.text}</Text>
-            </Box>
-            <Box gap={2}>
-              <Text dimColor>Merge</Text>
-              <Text color={merge.state === 'skip' ? undefined : tone(merge.state)}>{merge.text}</Text>
-            </Box>
-          </Box>
-          {pr.error && <Text color="yellow">{pr.error}</Text>}
-        </Box>
-      )
-    }
-
-    const drawRelease = (r: Release) => {
-      const t = tally(releaseItems(r))
-      const runWidth = groupWidthOf(r.runs.map(run => run.name))
-      const state = releaseState(r)
-      return (
-        <Box key={`detail-${r.key}`} flexDirection="column" gap={1}>
-          <Box gap={2}>
-            {r.url ? <Link href={r.url} label={r.label} /> : <Text bold>{r.label}</Text>}
-            <Text dimColor>release</Text>
-          </Box>
-
-          {Raster && settings.invaders && (
-            <Raster
-              key="invaders"
-              {...toCells(
-                invadersFrame({
-                  invaders: releaseInvaders(r).map(job => ({
-                    state: job.state,
-                    slot: fleets.get(r.key)?.get(job.key)?.slot,
-                    seenAt: fleets.get(r.key)?.get(job.key)?.seenAt,
-                    doneAt: doneAt.get(`${r.key}|${job.key}`),
-                  })),
-                  frame: f,
-                  width: inner,
-                  ship: shipFor(r.key),
-                }),
-              )}
-            />
-          )}
-
-          <Box flexDirection="column">
-            {Verdict({ state, t })}
-            {Bar({ t, width: barWidth })}
-          </Box>
-
-          {r.runs.length === 0 && !r.error && (
-            <Box gap={2}>
-              <Text color="yellow">{glyph('pending', f)}</Text>
-              <Text dimColor>waiting for pipelines to start</Text>
-            </Box>
-          )}
-          {r.runs.length > 0 && (
-            <Box flexDirection="column">
-              {r.runs.map(run => (
-                <Box key={`run-${run.id}`} flexDirection="column">
-                  {Row({
-                    key: `run-row-${run.id}`,
-                    state: run.state,
-                    group: run.name,
-                    groupWidth: runWidth,
-                    name: run.title || `run ${run.id}`,
-                    url: run.url || undefined,
-                    ms: run.durationMs,
-                  })}
-                  {byUrgency(run.jobs.filter(job => job.state !== 'pass'))
-                    .slice(0, MAX_JOBS)
-                    .map(job =>
-                      Row({
-                        key: `job-${run.id}-${job.name}`,
-                        state: job.state,
-                        group: '',
-                        groupWidth: runWidth,
-                        name: job.name,
-                        url: job.url,
-                        ms: job.durationMs,
-                        isWaiting: job.isWaiting,
-                      }),
-                    )}
-                </Box>
-              ))}
-            </Box>
-          )}
-          {r.error && <Text color="yellow">{r.error}</Text>}
-        </Box>
-      )
-    }
-
-    const isTall = (props.scroll?.bodyRows ?? 40) >= 32
-    boardShape = { prRows: isTall ? 4 : 3, sideRows: isTall ? 3 : 2, isSideBySide: inner >= 100 }
-    const shortRepo = (repo: string) => repo.split('/')[1] ?? repo
-    // Every list shares one set of column widths so the columns line up across them.
-    const allRepos = [
-      ...prList.map(pr => pr.repo),
-      ...releaseList.map(r => r.repo ?? ''),
-      ...(mine.prs.length > 0 ? [mine.repo] : []),
-    ].map(shortRepo)
-    const repoWidth = Math.min(14, Math.max(0, ...allRepos.map(repo => repo.length)))
-    const counts = [...items.map(item => item.t), ...mine.prs.map(pr => tally(pr.checks))].map(t => `${t.pass}/${t.total}`.length)
-    const countWidth = Math.max(3, ...counts)
-
-    const BAR_CELLS = 6
-    // Every column has a fixed width, the title included (whatever the row has
-    // left), so nothing a terminal draws wider than expected can shift the rest.
-    const ListRow = ({ key, width, marker, state, repo, label, title, t, isOpen, buttonKey, onPress }: {
-      key: string
-      width: number
-      marker: string
-      state: Shown
-      repo: string
-      label: string
-      title: string
-      t: Tally
-      isOpen: boolean
-      buttonKey: string
-      onPress: () => unknown
-    }) => {
-      const columns = [1, 1, repoWidth, labelWidth, BAR_CELLS, countWidth].filter(w => w > 0)
-      const titleWidth = Math.max(4, width - columns.reduce((sum, w) => sum + w, 0) - columns.length)
-      return (
-        <Box key={key} gap={1} {...(isOpen || cursorKey === buttonKey ? { backgroundColor: 'userMessageBackground' } : {})}>
-          <Box width={1} flexShrink={0}>
-            <Text color="cyan" dimColor={!isOpen}>
-              {marker}
-            </Text>
-          </Box>
-          <Box width={1} flexShrink={0}>
-            <Text color={tone(state)}>{glyph(state, f)}</Text>
-          </Box>
-          {repoWidth > 0 && (
-            <Box width={repoWidth} flexShrink={0}>
-              <Text dimColor wrap="truncate">
-                {clip(repo, repoWidth)}
-              </Text>
-            </Box>
-          )}
-          <Box width={labelWidth} flexShrink={0}>
-            <Button key={buttonKey} plain dimColor={!isOpen} label={clip(label, labelWidth)} onPress={onPress} />
-          </Box>
-          <Box width={titleWidth} flexShrink={0} overflow="hidden">
-            <Text bold={isOpen} dimColor={!isOpen} wrap="truncate">
-              {clip(title, titleWidth)}
-            </Text>
-          </Box>
-          <Box width={BAR_CELLS} flexShrink={0}>
-            {Bar({ t, width: BAR_CELLS })}
-          </Box>
-          <Box width={countWidth} flexShrink={0} justifyContent="flex-end">
-            <Text dimColor>
-              {t.pass}/{t.total}
-            </Text>
-          </Box>
-        </Box>
-      )
-    }
-
-    const tracked = new Set(prList.map(pr => pr.url))
-    const trackAndOpen = async (url: string) => {
-      await trackPr($, url)
-      await update($, selected, () => `pr:${url}`)
-    }
-    const untracked = mine.prs.filter(pr => !tracked.has(pr.url))
-    const prItems = items.filter(item => 'pr' in item)
-    const actionItems = items.filter(item => 'release' in item)
-    const isListShown = shown !== 'detail'
-    const sections = {
-      prs: isListShown ? prItems.map(item => `${ITEM}${item.key}`) : [],
-      actions: isListShown ? actionItems.map(item => `${ITEM}${item.key}`) : [],
-      mine: isListShown ? untracked.map(pr => `${ADD}${pr.url}`) : [],
-    }
-    rowKeys = [...sections.prs, ...sections.actions, ...sections.mine]
-    sectionRows = sections
-    drawnRows = new Set()
-    type Section = keyof typeof sections
-    const ids = Object.keys(sections) as Section[]
-    const active: Section =
-      ids.find(id => sections[id].includes(cursorKey)) ?? ids.find(id => sections[id].includes(`${ITEM}${openKey}`)) ?? 'prs'
-    const focusIn = (id: Section) =>
-      sections[id].includes(cursorKey) ? cursorKey : sections[id].includes(`${ITEM}${openKey}`) ? `${ITEM}${openKey}` : ''
-    const where = (id: Section) => {
-      const keys = sections[id]
-      const at = keys.indexOf(focusIn(id))
-      return keys.length === 0 ? '' : at === -1 ? ` · ${keys.length}` : ` · ${at + 1} of ${keys.length}`
-    }
-    const Heading = ({ id, label }: { id: Section; label: string }) => (
-      <Button
-        key={`${SECTION}${id}`}
-        plain
-        dimColor={id !== active}
-        hotkey={String(Object.keys(sections).indexOf(id) + 1)}
-        label={label}
-        onPress={() => jumpToSection($, id)}
-      />
-    )
-
-    // A list panel of fixed height: a border (lit when active), the heading with
-    // where you are and what's scrolled out of view, and `size` rows.
-    type Line = { key: string; draw: (width: number) => RenderChildren }
-    const ListBlock = ({ id, label, lines, size, empty, width }: { id: Section; label: string; lines: Line[]; size: number; empty: string; width?: number }) => {
-      const at = lines.findIndex(line => line.key !== '' && line.key === focusIn(id))
-      const first = scrollWindow(windowStarts.get(id) ?? 0, at, lines.length, size)
-      windowStarts.set(id, first)
-      const visible = lines.slice(first, first + size)
-      for (const line of visible) if (line.key) drawnRows.add(line.key)
-      const above = lines.slice(0, first).filter(line => line.key).length
-      const below = lines.slice(first + size).filter(line => line.key).length
-      const more = [above > 0 && `↑${above}`, below > 0 && `↓${below}`].filter(Boolean).join(' ')
-      return (
-        <Box
-          key={`list-${id}`}
-          flexDirection="column"
-          height={size + 3}
-          minWidth={0}
-          borderStyle="round"
-          paddingX={1}
-          {...(id === active ? { borderColor: 'cyan' } : { borderDimColor: true })}
-          {...(width ? { width, flexShrink: 0 } : { flexGrow: 1 })}
-        >
-          {Heading({ id, label: more ? `${label}${where(id)}  ${more}` : `${label}${where(id)}` })}
-          <Box flexDirection="column" height={size}>
-            {visible.length > 0 ? visible.map(line => line.draw((width ?? inner) - 4)) : <Text dimColor wrap="truncate-end">{empty}</Text>}
-          </Box>
-        </Box>
-      )
-    }
-
-    const trackedLine = (item: (typeof items)[number]): Line => ({
-      key: `${ITEM}${item.key}`,
-      draw: width =>
-        ListRow({
-          key: `row-${item.key}`,
-          width,
-          state: item.state,
-          repo: shortRepo('pr' in item ? item.pr.repo : (item.release.repo ?? '')),
-          label: item.label,
-          title: item.title,
-          t: item.t,
-          isOpen: item.key === openKey,
-          marker: item.key === openKey ? '>' : ' ',
-          buttonKey: `${ITEM}${item.key}`,
-          onPress: () => openItem($, item.key),
-        }),
-    })
-
-    const mineRepo = mine.repo ? shortRepo(mine.repo) : ''
-    const mineLines: Line[] = untracked.map(pr => ({
-      key: `${ADD}${pr.url}`,
-      draw: width =>
-        ListRow({
-          key: `mine-${pr.url}`,
-          width,
-          state: pr.checks.length === 0 ? 'skip' : overall(pr.checks),
-          repo: mineRepo,
-          label: `#${pr.number}`,
-          title: pr.isDraft ? `${pr.title} (draft)` : pr.title,
-          t: tally(pr.checks),
-          isOpen: false,
-          marker: '+',
-          buttonKey: `${ADD}${pr.url}`,
-          onPress: () => trackAndOpen(pr.url),
-        }),
-    }))
-
-    const open = items.find(item => item.key === openKey)
-    const detail = open ? ('pr' in open ? drawPr(open.pr) : drawRelease(open.release)) : null
-    const openPr = open && 'pr' in open ? open.pr : undefined
-    const failingChecks = openPr?.checks.filter(c => c.state === 'fail') ?? []
-    const hasFailedRuns = open && 'release' in open && open.release.runs.some(run => run.state === 'fail')
-    // x removes the highlighted tracked row, or the pinned one when the cursor is elsewhere.
-    const isTrackedRow = sections.prs.includes(cursorKey) || sections.actions.includes(cursorKey)
-    const removable = isTrackedRow ? cursorKey.slice(ITEM.length) : openKey
-    const finishedCount = [...prList, ...releaseList].filter(isFinished).length
-
-    // Side by side, each list gets a fixed half, or the busier one crowds the other out.
-    const leftWidth = boardShape.isSideBySide ? Math.floor((inner - 1) / 2) : undefined
-    const rightWidth = leftWidth === undefined ? undefined : inner - 1 - leftWidth
-    const prBlock = ListBlock({
-      id: 'prs',
-      label: 'PULL REQUESTS',
-      lines: prItems.map(trackedLine),
-      size: boardShape.prRows,
-      empty: 'None tracked. Press enter on one of your PRs, or /pulse-pr.',
-    })
-    const actionBlock = ListBlock({
-      id: 'actions',
-      label: 'ACTIONS',
-      lines: actionItems.map(trackedLine),
-      size: boardShape.sideRows,
-      width: leftWidth,
-      empty: 'None tracked. /pulse-release, or a release Claude creates.',
-    })
-    const mineBlock = ListBlock({
-      id: 'mine',
-      label: 'YOUR OPEN PRS',
-      lines: mineLines,
-      size: boardShape.sideRows,
-      width: rightWidth,
-      empty: mine.error ?? (mine.prs.length > 0 ? 'All tracked.' : 'None open.'),
-    })
-
-    // Laid into rows by hand: a wrapping Box puts its gap between rows too.
-    // The rows always take the height the full set would, so switching items
-    // never moves the lists below.
-    const undoLabel = kept ? `Undo (${clip(kept.label, UNDO_LABEL_MAX)})` : ''
-    const actions = (
-      [
-        ['Refresh', <Button key="refresh" plain dimColor hotkey="r" label="Refresh" onPress={() => showWhile($, 'Refreshing', () => Promise.all([poll($, true), refreshLists($)]))} />],
-        [
-          LAYOUT_LABEL[NEXT_LAYOUT[shown]],
-          <Button key="layout" plain dimColor hotkey="m" label={LAYOUT_LABEL[NEXT_LAYOUT[shown]]} onPress={() => cycleLayout($)} />,
-        ],
-        failingChecks.length > 0 && [
-          'Fix it',
-          <Button key="fix" plain hotkey="f" label="Fix it" onPress={() => showWhile($, 'Reading the failing logs', () => fixIt($, openKey, e.surface))} />,
-        ],
-        (failingChecks.length > 0 || hasFailedRuns) && [
-          'Rerun failed',
-          <Button key="rerun" plain dimColor hotkey="e" label="Rerun failed" onPress={() => showWhile($, 'Rerunning the failed jobs', () => rerunFailed($, openKey))} />,
-        ],
-        failingChecks.length > 1 && [
-          'Next log',
-          <Button key="log" plain dimColor hotkey="l" label="Next log" onPress={() => showWhile($, 'Loading the log', () => nextLog($, openKey))} />,
-        ],
-        failingChecks.length > 0 && ['Copy log', <Button key="copy" plain dimColor hotkey="y" label="Copy log" onPress={() => copyLog($, openKey, e.surface)} />],
-        openPr && openPr.state === 'OPEN' && me && openPr.author && openPr.author !== me && [
-          'Review with Claude',
-          <Button key="ask" plain hotkey="a" label="Review with Claude" onPress={() => askForReview($, openPr.url)} />,
-        ],
-        openKey && ['Open', <Button key="open" plain dimColor hotkey="o" label="Open" onPress={() => openInBrowser($, openKey)} />],
-        removable && ['Remove', <Button key="remove" plain dimColor hotkey="x" label="Remove" onPress={() => untrack($, removable)} />],
-        finishedCount > 0 && [
-          `Clear finished (${finishedCount})`,
-          <Button key="clear-finished" plain dimColor hotkey="d" label={`Clear finished (${finishedCount})`} onPress={() => clearFinished($)} />,
-        ],
-        items.length > 0 && ['Clear', <Button key="clear" plain dimColor hotkey="c" label="Clear" onPress={() => clearAll($)} />],
-        kept && [undoLabel, <Button key="undo" plain hotkey="z" label={undoLabel} onPress={() => undoRemoval($)} />],
-        [
-          isShowingKeys ? 'Hide keys' : 'Keys',
-          <Button key="keys" plain dimColor hotkey="h" label={isShowingKeys ? 'Hide keys' : 'Keys'} onPress={() => update($, isKeysShown, shown => !shown)} />,
-        ],
-      ] as const
-    )
-      .filter(action => action !== false && action !== undefined && action !== '' && action !== null)
-      .map(action => {
-        const [label, button] = action as readonly [string, RenderChildren]
-        return { width: label.length + 3, button } // "k: label"
-      })
-    const actionRows = packRows(actions.map(action => action.width), inner, ACTION_GAP)
-    const actionRowsReserved = packRows(ALL_ACTION_LABELS.map(label => label.length + 3), inner, ACTION_GAP).length
-
-    return (
-      <Box flexDirection="column" paddingX={1} gap={1}>
-        {/* Help on its own line so it never gets truncated. */}
-        <Box flexDirection="column">
-          {actionRows.map((row, i) => (
-            <Box key={`actions-${i}`} gap={ACTION_GAP}>
-              {row.map(index => actions[index]!.button)}
-            </Box>
-          ))}
-          {doing ? (
-            <Text color="yellow" wrap="truncate-end">
-              {glyph('pending', f)} {doing}…
-            </Text>
-          ) : (
-            <Text dimColor wrap="truncate-end">
-              {props.isFocused ? '↑↓ move · enter pin · 1 2 3 lists · h all keys · esc back to prompt' : 'ctrl+x tab or click to use the keyboard'}
-            </Text>
-          )}
-          {/* Room for the rows other items' buttons need, so the lists below never move. */}
-          {Array.from({ length: Math.max(0, actionRowsReserved - actionRows.length) }, (_, i) => (
-            <Text key={`actions-pad-${i}`}> </Text>
-          ))}
-        </Box>
-
-        {isShowingKeys && (
-          <Box key="keys-panel" borderStyle="round" borderDimColor paddingX={1} gap={4}>
-            {KEYS.map((group, column) => (
-              <Box key={`keys-${column}`} flexDirection="column">
-                {group.map(([keys, does]) => (
-                  <Box key={`key-${keys}`} gap={1}>
-                    <Box width={9} flexShrink={0}>
-                      <Text color="cyan">{keys}</Text>
-                    </Box>
-                    <Text dimColor wrap="truncate">
-                      {does}
-                    </Text>
-                  </Box>
-                ))}
-              </Box>
-            ))}
-          </Box>
-        )}
-
-        {/* Lists first at fixed heights, so the open item always starts on the same row. */}
-        {isListShown && prBlock}
-        {isListShown &&
-          (boardShape.isSideBySide ? (
-            <Box key="side-lists" gap={1}>
-              {actionBlock}
-              {mineBlock}
-            </Box>
-          ) : (
-            <Box key="side-lists" flexDirection="column">
-              {actionBlock}
-              {mineBlock}
-            </Box>
-          ))}
-
-        {shown !== 'list' && detail}
-        {shown === 'detail' && !detail && <Text dimColor>Nothing open. Press m to bring the list back.</Text>}
-      </Box>
-    )
   })
 }
