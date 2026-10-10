@@ -5,7 +5,8 @@ name: Release
 # squash merges is the PR titles: a breaking change (`feat!:` or "BREAKING
 # CHANGE") bumps major, any `feat:` bumps minor, anything else patch. Pick a
 # bump to override that. The workflow commits the new version to plugin.json
-# on main, tags gh-pulse--v<version> and publishes a GitHub release.
+# on main, tags ci-invaders--v<version> and publishes a GitHub release. Tags from
+# before the rename (gh-pulse--v*) still count as the last release.
 on:
   workflow_dispatch:
     inputs:
@@ -38,7 +39,7 @@ jobs:
         env:
           BUMP: ${{ inputs.bump }}
         run: |
-          last=$(git describe --tags --match 'gh-pulse--v*' --abbrev=0 2>/dev/null || true)
+          last=$(git describe --tags --match 'ci-invaders--v*' --match 'gh-pulse--v*' --abbrev=0 2>/dev/null || true)
           if [ -z "$last" ]; then
             echo "No release tag yet; tag the current version first." >&2
             exit 1
@@ -58,7 +59,7 @@ jobs:
             fi
           fi
 
-          IFS=. read -r major minor patch <<< "${last#gh-pulse--v}"
+          IFS=. read -r major minor patch <<< "${last##*--v}"
           case $bump in
             major) version="$((major + 1)).0.0" ;;
             minor) version="$major.$((minor + 1)).0" ;;
@@ -77,10 +78,10 @@ jobs:
 
           jq --arg v "$VERSION" '.version = $v' .claude-plugin/plugin.json > plugin.json.tmp
           mv plugin.json.tmp .claude-plugin/plugin.json
-          git commit -am "chore(release): gh-pulse v$VERSION"
+          git commit -am "chore(release): ci-invaders v$VERSION"
           # Something merged while this ran: go on top of it.
           git pull --rebase origin main
           git push origin HEAD:main
 
-          claude plugin tag --push -m "gh-pulse v%s"
-          gh release create "gh-pulse--v$VERSION" --title "gh-pulse v$VERSION" --generate-notes
+          claude plugin tag --push -m "CI Invaders v%s"
+          gh release create "ci-invaders--v$VERSION" --title "CI Invaders v$VERSION" --generate-notes

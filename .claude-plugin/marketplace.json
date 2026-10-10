@@ -1,14 +1,14 @@
 {
-  "name": "gh-pulse",
+  "name": "ci-invaders",
   "owner": {
     "name": "SID Technologies"
   },
   "metadata": {
-    "description": "gh-pulse: PR checks and GitHub Actions runs, live in Claude Code"
+    "description": "ci-invaders: PR checks and GitHub Actions runs, live in Claude Code"
   },
   "plugins": [
     {
-      "name": "gh-pulse",
+      "name": "ci-invaders",
       "source": "./",
       "description": "PR checks and GitHub Actions runs, live in Claude Code. Failing logs one key from Claude, and Space Invaders for your pipelines."
     }

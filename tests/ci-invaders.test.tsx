@@ -147,11 +147,11 @@ test('gh pr create tracks the PR', async ($, on) => {
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({
-      plugin: 'gh-pulse',
+      plugin: 'ci-invaders',
       surface,
       component: 'Pane',
-      requestId: 'gh-pulse',
-      props: { title: 'gh-pulse', isFocused: false, bodyColumns: 80, placement: 'dock' } as unknown as RenderPropsOf['Pane'],
+      requestId: 'ci-invaders',
+      props: { title: 'CI Invaders', isFocused: false, bodyColumns: 80, placement: 'dock' } as unknown as RenderPropsOf['Pane'],
     })
     expect(await ui.find({ type: 'Link', text: '#482' })).toBeDefined()
     expect(await ui.find({ type: 'Button', text: '#482' })).toBeDefined()
@@ -163,7 +163,7 @@ test('gh pr create tracks the PR', async ($, on) => {
   }
 
   const band = await $.ui.mount({
-    plugin: 'gh-pulse',
+    plugin: 'ci-invaders',
     surface: 'terminal',
     component: 'AbovePrompt',
     props: {} as unknown as RenderPropsOf['AbovePrompt'],
@@ -200,11 +200,11 @@ test('board lists tracked items and your PRs, and tracks on press', async ($, on
   await $.command.run({ command: 'pulse', args: '' } as never)
 
   const ui = await $.ui.mount({
-    plugin: 'gh-pulse',
+    plugin: 'ci-invaders',
     surface: 'terminal',
     component: 'Pane',
-    requestId: 'gh-pulse',
-    props: { title: 'gh-pulse', isFocused: true, bodyColumns: 80, placement: 'dock' } as unknown as RenderPropsOf['Pane'],
+    requestId: 'ci-invaders',
+    props: { title: 'CI Invaders', isFocused: true, bodyColumns: 80, placement: 'dock' } as unknown as RenderPropsOf['Pane'],
   })
 
   // Help sits on its own line; the tracked rows are Buttons ↑↓ walk, newest open.
@@ -275,14 +275,14 @@ test('shows setup steps when gh is missing or signed out', async ($, on) => {
 
   const board = async () =>
     $.ui.mount({
-      plugin: 'gh-pulse',
+      plugin: 'ci-invaders',
       surface: 'terminal',
       component: 'Pane',
-      requestId: 'gh-pulse',
-      props: { title: 'gh-pulse', isFocused: true, bodyColumns: 80, placement: 'dock' } as unknown as RenderPropsOf['Pane'],
+      requestId: 'ci-invaders',
+      props: { title: 'CI Invaders', isFocused: true, bodyColumns: 80, placement: 'dock' } as unknown as RenderPropsOf['Pane'],
     })
   let ui = await board()
-  expect(await ui.find({ type: 'Text', text: 'gh-pulse needs the GitHub CLI' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'CI Invaders needs the GitHub CLI' })).toBeDefined()
   await ui.unmount()
 
   installed = true

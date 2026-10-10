@@ -81,8 +81,8 @@ import {
 
 type $ = EngineInterface
 
-const PANE = 'gh-pulse'
-const TITLE = 'gh-pulse'
+const PANE = 'ci-invaders'
+const TITLE = 'CI Invaders'
 const STORE_KEY = 'tracked'
 
 const POLL_MS = 15_000
@@ -146,24 +146,24 @@ const ALL_ACTION_LABELS = [
   'Hide keys',
 ]
 
-const prs = atom({ plugin: 'gh-pulse', key: 'prs' } as const, [])
-const releases = atom({ plugin: 'gh-pulse', key: 'releases' } as const, [])
-const frame = atom({ plugin: 'gh-pulse', key: 'frame' } as const, 0)
-const isBandHidden = atom({ plugin: 'gh-pulse', key: 'isBandHidden' } as const, false)
-const selected = atom({ plugin: 'gh-pulse', key: 'selected' } as const, '')
-const layout = atom({ plugin: 'gh-pulse', key: 'layout' } as const, 'both' as Layout)
-const setup = atom({ plugin: 'gh-pulse', key: 'setup' } as const, { gh: 'unknown', os: 'unknown' } as Setup)
-const celebration = atom({ plugin: 'gh-pulse', key: 'celebration' } as const, null as Celebration | null)
-const undo = atom({ plugin: 'gh-pulse', key: 'undo' } as const, null as Undo | null)
-const cursor = atom({ plugin: 'gh-pulse', key: 'cursor' } as const, '')
-const busy = atom({ plugin: 'gh-pulse', key: 'busy' } as const, '')
-const isKeysShown = atom({ plugin: 'gh-pulse', key: 'isKeysShown' } as const, false)
-const logs = atom({ plugin: 'gh-pulse', key: 'logs' } as const, {} as Logs)
-const viewer = atom({ plugin: 'gh-pulse', key: 'viewer' } as const, '')
-const logCheck = atom({ plugin: 'gh-pulse', key: 'logCheck' } as const, '')
-const history = atom({ plugin: 'gh-pulse', key: 'history' } as const, {} as Record<string, History>)
-const avatars = atom({ plugin: 'gh-pulse', key: 'avatars' } as const, {} as Record<string, string>)
-const openPrs = atom({ plugin: 'gh-pulse', key: 'openPrs' } as const, { repo: '', prs: [] } as OpenPrs)
+const prs = atom({ plugin: 'ci-invaders', key: 'prs' } as const, [])
+const releases = atom({ plugin: 'ci-invaders', key: 'releases' } as const, [])
+const frame = atom({ plugin: 'ci-invaders', key: 'frame' } as const, 0)
+const isBandHidden = atom({ plugin: 'ci-invaders', key: 'isBandHidden' } as const, false)
+const selected = atom({ plugin: 'ci-invaders', key: 'selected' } as const, '')
+const layout = atom({ plugin: 'ci-invaders', key: 'layout' } as const, 'both' as Layout)
+const setup = atom({ plugin: 'ci-invaders', key: 'setup' } as const, { gh: 'unknown', os: 'unknown' } as Setup)
+const celebration = atom({ plugin: 'ci-invaders', key: 'celebration' } as const, null as Celebration | null)
+const undo = atom({ plugin: 'ci-invaders', key: 'undo' } as const, null as Undo | null)
+const cursor = atom({ plugin: 'ci-invaders', key: 'cursor' } as const, '')
+const busy = atom({ plugin: 'ci-invaders', key: 'busy' } as const, '')
+const isKeysShown = atom({ plugin: 'ci-invaders', key: 'isKeysShown' } as const, false)
+const logs = atom({ plugin: 'ci-invaders', key: 'logs' } as const, {} as Logs)
+const viewer = atom({ plugin: 'ci-invaders', key: 'viewer' } as const, '')
+const logCheck = atom({ plugin: 'ci-invaders', key: 'logCheck' } as const, '')
+const history = atom({ plugin: 'ci-invaders', key: 'history' } as const, {} as Record<string, History>)
+const avatars = atom({ plugin: 'ci-invaders', key: 'avatars' } as const, {} as Record<string, string>)
+const openPrs = atom({ plugin: 'ci-invaders', key: 'openPrs' } as const, { repo: '', prs: [] } as OpenPrs)
 
 // Module state. Reset when the module reloads; $.state and $.store survive that.
 let settings: Settings = readSettings(undefined)
@@ -326,7 +326,7 @@ async function checkGh($: $): Promise<boolean> {
   const os = before.os === 'unknown' && state === 'missing' ? await detectOs($) : before.os
   if (before.gh !== state || before.os !== os) await update($, setup, () => ({ gh: state, os }))
   if (state === 'ready' && before.gh !== 'ready' && before.gh !== 'unknown') {
-    $.ui.toast('gh-pulse is ready: GitHub CLI found and signed in')
+    $.ui.toast('CI Invaders is ready: GitHub CLI found and signed in')
   }
   return state === 'ready'
 }
@@ -1616,14 +1616,14 @@ async function resetBoard($: $): Promise<void> {
 // ── Hooks ───────────────────────────────────────────────────────────────
 
 const COMMANDS = [
-  { name: 'pulse', description: 'gh-pulse: open the board, or track a pasted PR or Actions link', argumentHint: '[link]' },
-  { name: 'pulse-pr', description: 'gh-pulse: track a PR (number, URL, owner/repo#n, or current branch)', argumentHint: '[pr]' },
+  { name: 'pulse', description: 'CI Invaders: open the board, or track a pasted PR or Actions link', argumentHint: '[link]' },
+  { name: 'pulse-pr', description: 'CI Invaders: track a PR (number, URL, owner/repo#n, or current branch)', argumentHint: '[pr]' },
   {
     name: 'pulse-release',
-    description: 'gh-pulse: track Actions runs (tag, workflow .yml, run, or latest release; any repo)',
+    description: 'CI Invaders: track Actions runs (tag, workflow .yml, run, or latest release; any repo)',
     argumentHint: '[owner/repo] [tag|workflow.yml|run id|url]',
   },
-  { name: 'pulse-clear', description: 'gh-pulse: stop tracking everything' },
+  { name: 'pulse-clear', description: 'CI Invaders: stop tracking everything' },
 ] as const
 
 export const register: Register = (on, options) => {

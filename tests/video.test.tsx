@@ -42,11 +42,11 @@ const ok = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isSt
 
 const pane = (focused = true) =>
   ({
-    plugin: 'gh-pulse',
+    plugin: 'ci-invaders',
     surface: 'terminal',
     component: 'Pane',
-    requestId: 'gh-pulse',
-    props: { title: 'gh-pulse', isFocused: focused, bodyColumns: 80, placement: 'dock' } as unknown as RenderPropsOf['Pane'],
+    requestId: 'ci-invaders',
+    props: { title: 'CI Invaders', isFocused: focused, bodyColumns: 80, placement: 'dock' } as unknown as RenderPropsOf['Pane'],
   }) as const
 
 // ── Pixels ──────────────────────────────────────────────────────────────

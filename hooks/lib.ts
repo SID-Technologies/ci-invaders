@@ -568,7 +568,7 @@ export function setupAdvice(setup: Setup): { title: string; steps: string[] } | 
   if (setup.gh === 'missing') {
     const install = installCommand(setup.os)
     return {
-      title: 'gh-pulse needs the GitHub CLI',
+      title: 'CI Invaders needs the GitHub CLI',
       steps: [
         install ? `Install it: ${install}  (or ${GH_DOWNLOAD})` : `Install it: ${GH_DOWNLOAD}`,
         'Then sign in: gh auth login',
@@ -577,8 +577,8 @@ export function setupAdvice(setup: Setup): { title: string; steps: string[] } | 
   }
   if (setup.gh === 'signed-out') {
     return {
-      title: 'gh-pulse needs you signed in to GitHub',
-      steps: ['Run in a terminal: gh auth login', 'gh-pulse picks it up by itself within 15s'],
+      title: 'CI Invaders needs you signed in to GitHub',
+      steps: ['Run in a terminal: gh auth login', 'CI Invaders picks it up by itself within 15s'],
     }
   }
   return undefined
@@ -720,7 +720,7 @@ export function ciContext(prs: readonly Pr[], releases: readonly Release[]): str
     )
   }
   if (lines.length === 0) return undefined
-  let text = `gh-pulse (live CI status of what the user is tracking):\n${lines.map(line => `- ${line}`).join('\n')}`
+  let text = `CI Invaders (live CI status of what the user is tracking):\n${lines.map(line => `- ${line}`).join('\n')}`
   if (text.length > CONTEXT_LIMIT) text = `${text.slice(0, CONTEXT_LIMIT - 1)}…`
   return text
 }
